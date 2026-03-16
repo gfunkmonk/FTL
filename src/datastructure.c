@@ -53,7 +53,7 @@ void strtolower(char *str)
  *       strings. More details can be found at:
  *       http://www.burtleburtle.net/bob/hash/doobs.html
  */
-static uint32_t __attribute__ ((pure)) hashStr(const char *s)
+uint32_t __attribute__ ((pure)) hashStr(const char *s)
 {
 	// Jenkins' One-at-a-Time hash (optimized version)
 	// (http://www.burtleburtle.net/bob/hash/doobs.html)
@@ -112,15 +112,49 @@ static uint32_t __attribute__ ((pure)) hashCacheIDs(const unsigned int domainID,
 	return (((uint32_t)domainID) << 16) ^ ((uint32_t)(clientID) << 5) ^ query_type;
 }
 
+// Process-local direct-mapped cache: dnsmasq query ID -> query index
+// Provides O(1) lookup in findQueryID() instead of O(MAXITER) linear scan.
+// Since dnsmasq IDs are an incrementing counter, a direct-mapped cache works
+// perfectly: each new ID naturally evicts the oldest entry at its slot, giving
+// a sliding window of the last QUERY_ID_MAP_SIZE IDs. Cleared after GC memmove
+// (which shifts all query indices).
+#define QUERY_ID_MAP_SIZE 4096u  // Must be power of 2
+#define QUERY_ID_MAP_MASK (QUERY_ID_MAP_SIZE - 1u)
+
+static struct {
+	int dnsmasq_id;
+	int query_index;
+} query_id_map[QUERY_ID_MAP_SIZE];
+
+void queryIDMap_insert(const int dnsmasq_id, const int query_index)
+{
+	const unsigned int slot = (unsigned int)dnsmasq_id & QUERY_ID_MAP_MASK;
+	query_id_map[slot].dnsmasq_id = dnsmasq_id;
+	query_id_map[slot].query_index = query_index;
+}
+
+void queryIDMap_clear(void)
+{
+	memset(query_id_map, 0, sizeof(query_id_map));
+}
+
 int findQueryID(const int id)
 {
-	// Loop over all queries - we loop in reverse order (start from the most recent query and
-	// continuously walk older queries while trying to find a match. Ideally, we should always
-	// find the correct query with zero iterations, but it may happen that queries are processed
-	// asynchronously, e.g. for slow upstream relies to a huge amount of requests.
-	// We iterate from the most recent query down to at most MAXITER queries in the past to avoid
-	// iterating through the entire array of queries
-	// MAX(0, a) is used to return 0 in case a is negative (negative array indices are harmful)
+	// Try O(1) direct-mapped cache lookup
+	const unsigned int slot = (unsigned int)id & QUERY_ID_MAP_MASK;
+	if(query_id_map[slot].dnsmasq_id == id)
+	{
+		const int qi = query_id_map[slot].query_index;
+		// Validate against shared memory (index may be stale after GC)
+		if(qi >= 0 && qi < (int)counters->queries)
+		{
+			const queriesData *query = getQuery(qi, true);
+			if(query != NULL && query->id == id)
+				return qi;
+		}
+	}
+
+	// Fallback: reverse linear scan up to MAXITER queries
 	const unsigned int until = counters->queries > MAXITER ? counters->queries - MAXITER : 0;
 	const unsigned int start = counters->queries > 0 ? counters->queries - 1 : 0;
 

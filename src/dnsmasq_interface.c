@@ -884,6 +884,7 @@ bool _FTL_new_query(const unsigned int flags, const char *name,
 	log_debug(DEBUG_STATUS, "query type %d set (new query), ID = %d, new count = %u", query->type, id, counters->querytype[query->type]);
 	query->qtype = qtype;
 	query->id = id; // Has to be set before calling query_set_status()
+	queryIDMap_insert(id, queryID);
 
 	// This query is unknown as long as no reply has been found and analyzed
 	query_set_status_init(query, QUERY_UNKNOWN);

@@ -165,22 +165,6 @@ static uint32_t str_hash_used = 0; // number of occupied slots
 // strings that were added by forked children.
 static size_t str_hash_synced_pos = 0;
 
-// Jenkins One-at-a-Time hash (same algorithm used in datastructure.c)
-static uint32_t __attribute__((pure)) hash_string_for_dedup(const char *s)
-{
-	uint32_t hash = 0;
-	for(; *s; ++s)
-	{
-		hash += (unsigned char)*s;
-		hash += hash << 10;
-		hash ^= hash >> 6;
-	}
-	hash += hash << 3;
-	hash ^= hash >> 11;
-	hash += hash << 15;
-	return hash ? hash : 1;
-}
-
 // Insert an entry into the string hash table, growing if needed.
 static void str_hash_insert(uint32_t hash, uint32_t offset)
 {
@@ -252,6 +236,7 @@ static size_t str_hash_find(uint32_t hash, const char *input, size_t len)
 // (e.g. by a forked child) and add those strings to the hash table.
 static void str_hash_sync(void)
 {
+	// Safety check: if the string pool isn't mapped, we can't sync
 	if(shm_strings.ptr == NULL || shmSettings == NULL)
 		return;
 
@@ -263,12 +248,15 @@ static void str_hash_sync(void)
 	if(pos == 0 && end > 0)
 		pos = 1;
 
+	// Walk new strings until we reach the end of the pool, adding them to
+	// the hash table. This is O(new_bytes) but only happens when new
+	// strings are added by other processes, which is rare.
 	while(pos < end)
 	{
 		const char *s = pool + pos;
 		const size_t slen = strlen(s);
 		if(slen > 0)
-			str_hash_insert(hash_string_for_dedup(s), (uint32_t)pos);
+			str_hash_insert(hashStr(s), (uint32_t)pos);
 		pos += slen + 1;
 	}
 
@@ -381,7 +369,7 @@ size_t _addstr(const char *input, const char *func, const int line, const char *
 	str_hash_sync();
 
 	// O(1) hash-table lookup for an existing copy of this string
-	const uint32_t hash = hash_string_for_dedup(input);
+	const uint32_t hash = hashStr(input);
 	const size_t existing = str_hash_find(hash, input, len);
 	if(existing != SIZE_MAX)
 	{

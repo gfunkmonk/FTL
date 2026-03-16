@@ -134,6 +134,8 @@ struct lookup_data {
 
 void strtolower(char *str);
 int findQueryID(const int id);
+void queryIDMap_insert(const int dnsmasq_id, const int query_index);
+void queryIDMap_clear(void);
 #define findUpstreamID(upstream, port) _findUpstreamID(upstream, port, __LINE__, __FUNCTION__, __FILE__)
 int _findUpstreamID(const char *upstream, const in_port_t port, int line, const char *func, const char *file);
 #define findDomainID(domain, count) _findDomainID(domain, count, __LINE__, __FUNCTION__, __FILE__)
@@ -198,5 +200,8 @@ domainsData *_getDomain(const unsigned int domainID, const bool checkMagic, cons
 upstreamsData *_getUpstream(const unsigned int upstreamID, const bool checkMagic, const int line, const char *func, const char *file);
 #define getDNSCache(cacheID, checkMagic) _getDNSCache(cacheID, checkMagic, __LINE__, __FUNCTION__, __FILE__)
 DNSCacheData *_getDNSCache(const unsigned int cacheID, const bool checkMagic, const int line, const char *func, const char *file);
+
+// Helper functions
+uint32_t __attribute__ ((pure)) hashStr(const char *s);
 
 #endif //DATASTRUCTURE_H

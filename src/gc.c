@@ -532,6 +532,9 @@ void runGC(const time_t now, time_t *lastGCrun, const bool flush)
 		// Update queries counter
 		counters->queries -= removed;
 
+		// Invalidate the query ID cache since all indices shifted
+		queryIDMap_clear();
+
 		// Ensure remaining memory is zeroed out (marked as "F" in the above example)
 		queriesData *tail = getQuery(counters->queries, true);
 		if(tail)
