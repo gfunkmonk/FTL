@@ -68,6 +68,27 @@ bool db_import_done = false;
 // This has the side-effect of recycling intermediate domains
 // seen during CNAME inspection, too, as they are never referenced
 // by any query (only head and tail of the CNAME chain are)
+
+// Callbacks for lookup_compact(): check if the backing data structure
+// is still alive (magic byte != 0x00 after memset)
+static bool client_alive(unsigned int id)
+{
+	const clientsData *c = getClient(id, false);
+	return c != NULL && c->magic != 0x00;
+}
+
+static bool domain_alive(unsigned int id)
+{
+	const domainsData *d = getDomain(id, false);
+	return d != NULL && d->magic != 0x00;
+}
+
+static bool cache_alive(unsigned int id)
+{
+	const DNSCacheData *c = getDNSCache(id, false);
+	return c != NULL && c->magic != 0x00;
+}
+
 static void recycle(void)
 {
 	// Get current time
@@ -103,9 +124,6 @@ static void recycle(void)
 			          getstr(client->ippos), clientID, timestring);
 		}
 
-		// Remove client from lookup table
-		lookup_remove(CLIENTS_LOOKUP, clientID, client->hash);
-
 		// Add ID of recycled client to recycle table
 		set_next_recycled_ID(CLIENTS, clientID);
 
@@ -114,6 +132,11 @@ static void recycle(void)
 
 		clients_recycled++;
 	}
+
+	// Remove recycled clients from the lookup table in a single O(N)
+	// compaction pass instead of per-entry O(N) memmove
+	if(clients_recycled > 0)
+		lookup_compact(CLIENTS_LOOKUP, client_alive);
 
 	// Recycle domains
 	// A domain can be recycled when no active query references it either
@@ -146,9 +169,6 @@ static void recycle(void)
 			          getstr(domain->domainpos), domainID, timestring);
 		}
 
-		// Remove domain from lookup table
-		lookup_remove(DOMAINS_LOOKUP, domainID, domain->hash);
-
 		// Add ID of recycled domain to recycle table
 		set_next_recycled_ID(DOMAINS, domainID);
 
@@ -157,6 +177,11 @@ static void recycle(void)
 
 		domains_recycled++;
 	}
+
+	// Remove recycled domains from the lookup table in a single O(N)
+	// compaction pass instead of per-entry O(N) memmove
+	if(domains_recycled > 0)
+		lookup_compact(DOMAINS_LOOKUP, domain_alive);
 
 	// Recycle cache records
 	// A cache entry can be recycled when no active query references it,
@@ -190,10 +215,7 @@ static void recycle(void)
 
 		log_debug(DEBUG_GC, "Recycling cache entry with ID %u", cacheID);
 
-		// Remove cache entry from lookup table
-		lookup_remove(DNS_CACHE_LOOKUP, cacheID, cache->hash);
-
-		// Add ID of recycled domain to recycle table
+		// Add ID of recycled cache entry to recycle table
 		set_next_recycled_ID(DNS_CACHE, cacheID);
 
 		// Wipe cache entry's memory
@@ -201,6 +223,11 @@ static void recycle(void)
 
 		cache_recycled++;
 	}
+
+	// Remove recycled cache entries from the lookup table in a single
+	// O(N) compaction pass instead of per-entry O(N) memmove
+	if(cache_recycled > 0)
+		lookup_compact(DNS_CACHE_LOOKUP, cache_alive);
 
 	// Scan number of recycled clients, domains, and cache entries if in
 	// debug mode

@@ -307,6 +307,52 @@ bool lookup_remove(const enum memory_type type, const unsigned int id, const uin
 }
 
 /**
+ * @brief Removes all dead entries from the lookup table in a single pass.
+ *
+ * This function iterates over the lookup table once, keeping only the entries
+ * for which the is_alive callback returns true. The relative order of surviving
+ * entries is preserved, so the array remains sorted for binary search.
+ *
+ * This is O(N) regardless of how many entries are removed, compared to calling
+ * lookup_remove() K times which is O(K*N) due to per-removal memmove.
+ *
+ * @param type The memory type that determines which lookup table to use.
+ * @param is_alive Callback that returns true if the entry with the given ID
+ *                 is still in use and should be kept.
+ * @return true on success, false on error.
+ */
+bool lookup_compact(const enum memory_type type, bool (*is_alive)(unsigned int id))
+{
+	// Get the correct lookup_table array based on the type
+	struct lookup_table *table = NULL;
+	unsigned int *size = NULL;
+	const char *name = NULL;
+	if(!get_table(type, &table, &size, &name))
+		return false;
+
+	// Single-pass compaction: copy surviving entries forward
+	unsigned int write = 0;
+	for(unsigned int read = 0; read < *size; read++)
+	{
+		if(is_alive(table[read].id))
+		{
+			if(write != read)
+				table[write] = table[read];
+			write++;
+		}
+	}
+
+	// Zero out the freed tail
+	if(write < *size)
+		memset(table + write, 0, (*size - write) * sizeof(struct lookup_table));
+
+	// Update the size
+	*size = write;
+
+	return true;
+}
+
+/**
  * @brief Finds an element in the lookup table based on the given type and hash.
  *
  * This function searches for an element in the lookup table that matches the
