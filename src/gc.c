@@ -10,6 +10,8 @@
 
 #include "FTL.h"
 #include "gc.h"
+// Access to lookup table arrays (clients_lookup, etc.)
+#define LOOKUP_TABLE_PRIVATE
 #include "shmem.h"
 #include "timers.h"
 #include "config/config.h"
@@ -32,7 +34,7 @@
 #include "daemon.h"
 // create_inotify_watcher()
 #include "config/inotify.h"
-// lookup_remove()
+// lookup_find_hash_collisions(), struct lookup_table, lookup table arrays
 #include "lookup-table.h"
 // get_and_clear_event()
 #include "events.h"
@@ -68,27 +70,6 @@ bool db_import_done = false;
 // This has the side-effect of recycling intermediate domains
 // seen during CNAME inspection, too, as they are never referenced
 // by any query (only head and tail of the CNAME chain are)
-
-// Callbacks for lookup_compact(): check if the backing data structure
-// is still alive (magic byte != 0x00 after memset)
-static bool client_alive(unsigned int id)
-{
-	const clientsData *c = getClient(id, false);
-	return c != NULL && c->magic != 0x00;
-}
-
-static bool domain_alive(unsigned int id)
-{
-	const domainsData *d = getDomain(id, false);
-	return d != NULL && d->magic != 0x00;
-}
-
-static bool cache_alive(unsigned int id)
-{
-	const DNSCacheData *c = getDNSCache(id, false);
-	return c != NULL && c->magic != 0x00;
-}
-
 static void recycle(void)
 {
 	// Get current time
@@ -99,21 +80,26 @@ static void recycle(void)
 	// A client can be recycled when no active query references it,
 	// which is indicated by client->count == 0 (maintained incrementally
 	// during query creation and GC removal).
+	// We iterate over the lookup table and compact in-place: entries
+	// whose backing data is recycled are dropped, surviving entries are
+	// shifted forward to maintain sorted order for binary search.
 	unsigned int clients_recycled = 0;
-	for(unsigned int clientID = 0; clientID < counters->clients; clientID++)
+	unsigned int cwrite = 0;
+	for(unsigned int i = 0; i < counters->clients_lookup_size; i++)
 	{
+		const unsigned int clientID = clients_lookup[i].id;
 		clientsData *client = getClient(clientID, true);
 		if(client == NULL)
 			continue;
 
 		// Skip if still referenced by at least one query
 		if(client->count > 0)
-			continue;
+			goto keep_client;
 
 		// Never recycle aliasclients (they are not counted above but
 		// are only indirectly referenced by other clients)
 		if(client->flags.aliasclient)
-			continue;
+			goto keep_client;
 
 		if(config.debug.gc.v.b)
 		{
@@ -131,34 +117,43 @@ static void recycle(void)
 		memset(client, 0, sizeof(clientsData));
 
 		clients_recycled++;
-	}
+		continue;
 
-	// Remove recycled clients from the lookup table in a single O(N)
-	// compaction pass instead of per-entry O(N) memmove
+keep_client:
+		if(cwrite != i)
+			clients_lookup[cwrite] = clients_lookup[i];
+		cwrite++;
+	}
 	if(clients_recycled > 0)
-		lookup_compact(CLIENTS_LOOKUP, client_alive);
+	{
+		memset(clients_lookup + cwrite, 0,
+		       (counters->clients_lookup_size - cwrite) * sizeof(*clients_lookup));
+		counters->clients_lookup_size = cwrite;
+	}
 
 	// Recycle domains
 	// A domain can be recycled when no active query references it either
 	// directly (domain->count == 0) or via CNAME chain
 	// (domain->cname_refcount == 0), and its last query was > 24h ago.
 	unsigned int domains_recycled = 0;
-	for(unsigned int domainID = 0; domainID < counters->domains; domainID++)
+	unsigned int dwrite = 0;
+	for(unsigned int i = 0; i < counters->domains_lookup_size; i++)
 	{
+		const unsigned int domainID = domains_lookup[i].id;
 		domainsData *domain = getDomain(domainID, true);
 		if(domain == NULL)
 			continue;
 
 		// Skip if still referenced by any query or CNAME chain
 		if(domain->count > 0 || domain->cname_refcount > 0)
-			continue;
+			goto keep_domain;
 
 		// Only recycle domains when their last query was more than 24
 		// hours ago. This ensures that we do not recycle domains that
 		// have recently been seen but which are not part of any query
 		// (e.g., intermediate domains during CNAME inspection)
 		if(domain->lastQuery > twentyfour_hrs_ago)
-			continue;
+			goto keep_domain;
 
 		if(config.debug.gc.v.b)
 		{
@@ -176,27 +171,36 @@ static void recycle(void)
 		memset(domain, 0, sizeof(domainsData));
 
 		domains_recycled++;
-	}
+		continue;
 
-	// Remove recycled domains from the lookup table in a single O(N)
-	// compaction pass instead of per-entry O(N) memmove
+keep_domain:
+		if(dwrite != i)
+			domains_lookup[dwrite] = domains_lookup[i];
+		dwrite++;
+	}
 	if(domains_recycled > 0)
-		lookup_compact(DOMAINS_LOOKUP, domain_alive);
+	{
+		memset(domains_lookup + dwrite, 0,
+		       (counters->domains_lookup_size - dwrite) * sizeof(*domains_lookup));
+		counters->domains_lookup_size = dwrite;
+	}
 
 	// Recycle cache records
 	// A cache entry can be recycled when no active query references it,
 	// which is indicated by cache->refcount == 0 (maintained
 	// incrementally).
 	unsigned int cache_recycled = 0;
-	for(unsigned int cacheID = 0; cacheID < counters->dns_cache_size; cacheID++)
+	unsigned int kwrite = 0;
+	for(unsigned int i = 0; i < counters->dns_cache_lookup_size; i++)
 	{
+		const unsigned int cacheID = dns_cache_lookup[i].id;
 		DNSCacheData *cache = getDNSCache(cacheID, true);
 		if(cache == NULL)
 			continue;
 
 		// Skip if still referenced by at least one query
 		if(cache->refcount > 0)
-			continue;
+			goto keep_cache;
 
 		// If this cache entry held a CNAME domain reference, decrement
 		// that domain's cname_refcount. CNAME_domainID is initialized
@@ -222,12 +226,19 @@ static void recycle(void)
 		memset(cache, 0, sizeof(DNSCacheData));
 
 		cache_recycled++;
-	}
+		continue;
 
-	// Remove recycled cache entries from the lookup table in a single
-	// O(N) compaction pass instead of per-entry O(N) memmove
+keep_cache:
+		if(kwrite != i)
+			dns_cache_lookup[kwrite] = dns_cache_lookup[i];
+		kwrite++;
+	}
 	if(cache_recycled > 0)
-		lookup_compact(DNS_CACHE_LOOKUP, cache_alive);
+	{
+		memset(dns_cache_lookup + kwrite, 0,
+		       (counters->dns_cache_lookup_size - kwrite) * sizeof(*dns_cache_lookup));
+		counters->dns_cache_lookup_size = kwrite;
+	}
 
 	// Scan number of recycled clients, domains, and cache entries if in
 	// debug mode

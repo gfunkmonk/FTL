@@ -44,7 +44,6 @@ struct lookup_table {
 
 bool lookup_insert(const enum memory_type type, const unsigned int id, const uint32_t hash);
 bool lookup_remove(const enum memory_type type, const unsigned int id, const uint32_t hash);
-bool lookup_compact(const enum memory_type type, bool (*is_alive)(unsigned int id));
 bool lookup_find_id(const enum memory_type type, const uint32_t hash, const struct lookup_data *lookup_data,
                     unsigned int *matchingID,
                     bool (*cmp_func)(const struct lookup_table *entry, const struct lookup_data *lookup_data));
