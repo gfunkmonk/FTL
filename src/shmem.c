@@ -148,6 +148,143 @@ static pid_t shmem_pid = 0;
 static size_t used_shmem = 0u;
 static size_t get_optimal_object_size(const size_t objsize, const size_t minsize);
 
+// Minimum / initial capacity of the string hash table (must be power of 2)
+#define STR_HASH_MIN_CAP 4096u
+
+// String hash table entry: hash=0 means the slot is empty
+struct str_hash_entry {
+	uint32_t hash;
+	uint32_t offset;
+};
+
+static struct str_hash_entry *str_hash_table = NULL;
+static uint32_t str_hash_cap  = 0; // current capacity (always power of 2)
+static uint32_t str_hash_used = 0; // number of occupied slots
+
+// How far into the string pool we have indexed. Lets us incrementally pick up
+// strings that were added by forked children.
+static size_t str_hash_synced_pos = 0;
+
+// Jenkins One-at-a-Time hash (same algorithm used in datastructure.c)
+static uint32_t __attribute__((pure)) hash_string_for_dedup(const char *s)
+{
+	uint32_t hash = 0;
+	for(; *s; ++s)
+	{
+		hash += (unsigned char)*s;
+		hash += hash << 10;
+		hash ^= hash >> 6;
+	}
+	hash += hash << 3;
+	hash ^= hash >> 11;
+	hash += hash << 15;
+	return hash ? hash : 1;
+}
+
+// Insert an entry into the string hash table, growing if needed.
+static void str_hash_insert(uint32_t hash, uint32_t offset)
+{
+	// The string pool (shm_strings) is append-only: strings are never
+	// removed or moved, so pool offsets remain valid indefinitely. This
+	// lets us maintain a process-local open-addressing hash table that maps
+	// (string hash -> pool offset) without needing it in shared memory.
+	// Forked children inherit the parent's table via COW; any strings they
+	// add will simply be duplicated in the rare case the parent later adds
+	// the same string (negligible memory impact).
+
+	// Grow if the table doesn't exist or load factor exceeds 75%
+	if(str_hash_table == NULL || str_hash_used * 4 >= str_hash_cap * 3)
+	{
+		const uint32_t new_cap = str_hash_cap ? str_hash_cap * 2 : STR_HASH_MIN_CAP;
+		struct str_hash_entry *new_tbl = calloc(new_cap, sizeof(*new_tbl));
+		if(new_tbl == NULL)
+			return; // keep old table; worst case we miss some dedup
+
+		// Rehash existing entries into the new table
+		if(str_hash_table != NULL)
+		{
+			for(uint32_t i = 0; i < str_hash_cap; i++)
+			{
+				if(str_hash_table[i].hash == 0)
+					continue;
+				uint32_t idx = str_hash_table[i].hash & (new_cap - 1);
+				while(new_tbl[idx].hash != 0)
+					idx = (idx + 1) & (new_cap - 1);
+				new_tbl[idx] = str_hash_table[i];
+			}
+			free(str_hash_table);
+		}
+
+		str_hash_table = new_tbl;
+		str_hash_cap = new_cap;
+	}
+
+	// Insert into the table using linear probing
+	uint32_t idx = hash & (str_hash_cap - 1);
+	while(str_hash_table[idx].hash != 0)
+		idx = (idx + 1) & (str_hash_cap - 1);
+	str_hash_table[idx] = (struct str_hash_entry){ .hash = hash, .offset = offset };
+	str_hash_used++;
+}
+
+// Search the hash table for a string. Returns the pool offset, or SIZE_MAX if
+// not found. On hash collision, verifies with memcmp against the pool.
+static size_t str_hash_find(uint32_t hash, const char *input, size_t len)
+{
+	if(str_hash_table == NULL || str_hash_cap == 0)
+		return SIZE_MAX;
+
+	uint32_t idx = hash & (str_hash_cap - 1);
+	while(str_hash_table[idx].hash != 0)
+	{
+		if(str_hash_table[idx].hash == hash)
+		{
+			const char *candidate = &((const char*)shm_strings.ptr)[str_hash_table[idx].offset];
+			if(memcmp(candidate, input, len) == 0)
+				return (size_t)str_hash_table[idx].offset;
+		}
+		idx = (idx + 1) & (str_hash_cap - 1);
+	}
+	return SIZE_MAX;
+}
+
+// Walk any portion of the string pool that was appended since our last sync
+// (e.g. by a forked child) and add those strings to the hash table.
+static void str_hash_sync(void)
+{
+	if(shm_strings.ptr == NULL || shmSettings == NULL)
+		return;
+
+	const char *pool = (const char *)shm_strings.ptr;
+	size_t pos = str_hash_synced_pos;
+	const size_t end = shmSettings->next_str_pos;
+
+	// Position 0 holds the empty-string sentinel — skip it
+	if(pos == 0 && end > 0)
+		pos = 1;
+
+	while(pos < end)
+	{
+		const char *s = pool + pos;
+		const size_t slen = strlen(s);
+		if(slen > 0)
+			str_hash_insert(hash_string_for_dedup(s), (uint32_t)pos);
+		pos += slen + 1;
+	}
+
+	str_hash_synced_pos = end;
+}
+
+// Free the process-local string hash table (called from destroy_shmem)
+static void str_hash_reset(void)
+{
+	free(str_hash_table);
+	str_hash_table = NULL;
+	str_hash_cap = 0;
+	str_hash_used = 0;
+	str_hash_synced_pos = 0;
+}
+
 // Private prototypes
 static void *enlarge_shmem_struct(const char type, const size_t alloc_step);
 static void shm_ensure_size(void);
@@ -203,10 +340,10 @@ static bool chown_shmem(SharedMemory *sharedMemory, struct passwd *ent_pw)
 	return true;
 }
 
-// Add string to our shared memory buffer
-// This function checks if the string already exists in the buffer and returns
-// the position of the existing string if it does. Otherwise, it adds the
-// string to the buffer and returns the position of the newly added string.
+// Add string to our shared memory buffer using a process-local hash table for
+// O(1) deduplication. Returns the offset of the string in the shared memory
+// buffer, or zero for the empty string. If the string is too long to fit, it
+// will be truncated and added anyway, and a warning will be logged.
 size_t _addstr(const char *input, const char *func, const int line, const char *file)
 {
 	if(input == NULL)
@@ -238,15 +375,21 @@ size_t _addstr(const char *input, const char *func, const int line, const char *
 		len = avail_mem;
 	}
 
-	// Search buffer for existence of exact same string
-	char *str_pos = memmem(shm_strings.ptr, shmSettings->next_str_pos, input, len);
-	if(str_pos != NULL)
+	// Ensure our hash table covers any strings added by other processes
+	// (e.g. forked TCP children). This is O(new_bytes) — zero cost when the
+	// pool hasn't changed, which is the common case.
+	str_hash_sync();
+
+	// O(1) hash-table lookup for an existing copy of this string
+	const uint32_t hash = hash_string_for_dedup(input);
+	const size_t existing = str_hash_find(hash, input, len);
+	if(existing != SIZE_MAX)
 	{
-		log_debug(DEBUG_SHMEM, "Reusing existing string \"%s\" at %zd in %s() (%s:%i)",
-		          input, str_pos - (char*)shm_strings.ptr, func, short_path(file), line);
+		log_debug(DEBUG_SHMEM, "Reusing existing string \"%s\" at %zu in %s() (%s:%i)",
+		          input, existing, func, short_path(file), line);
 
 		// Return position of existing string
-		return (str_pos - (char*)shm_strings.ptr);
+		return existing;
 	}
 
 	// Debugging output
@@ -256,11 +399,18 @@ size_t _addstr(const char *input, const char *func, const int line, const char *
 	// Copy the C string pointed by input into the shared string buffer
 	strncpy(&((char*)shm_strings.ptr)[shmSettings->next_str_pos], input, len);
 
+	// Record the new string's position before advancing the pointer
+	const size_t new_offset = shmSettings->next_str_pos;
+
 	// Increment string length counter
 	shmSettings->next_str_pos += len;
 
+	// Add to our hash table so future lookups are O(1)
+	str_hash_insert(hash, (uint32_t)new_offset);
+	str_hash_synced_pos = shmSettings->next_str_pos;
+
 	// Return start of stored string
-	return (shmSettings->next_str_pos - len);
+	return new_offset;
 }
 
 // Get string from shared memory buffer
@@ -628,6 +778,9 @@ void chown_all_shmem(struct passwd *ent_pw)
 // Destroy mutex and, subsequently, delete all shared memory objects
 void destroy_shmem(void)
 {
+	// Free the process-local string dedup hash table
+	str_hash_reset();
+
 	// First, we destroy the mutex
 	if(shmLock != NULL)
 	{
