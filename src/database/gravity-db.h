@@ -54,7 +54,7 @@ void check_restored_gravity(void);
 bool gravity_updated(void);
 
 cJSON *gen_abp_patterns(const char *domain);
-enum db_result in_gravity(const char *domain, cJSON *abp_patterns, clientsData *client, const bool antigravity, int *domain_id);
+enum db_result in_gravity(const char *domain, cJSON **abp_patterns, clientsData *client, const bool antigravity, int *domain_id);
 enum db_result in_denylist(const char *domain, DNSCacheData *dns_cache, clientsData *client);
 enum db_result in_allowlist(const char *domain, DNSCacheData *dns_cache, clientsData *client);
 

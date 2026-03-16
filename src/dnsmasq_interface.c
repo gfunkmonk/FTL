@@ -1304,12 +1304,14 @@ static bool check_domain_blocked(const char *domain,
 		return true;
 	}
 
-	// Generate ABP patterns for domain
-	cJSON *abp_patterns = gen_abp_patterns(domain);
+	// ABP patterns are generated lazily inside in_gravity() only
+	// when exact-match fails and ABP format is enabled, avoiding
+	// heap allocations in the common exact-match case.
+	cJSON *abp_patterns = NULL;
 
 	// Check domain against antigravity
 	int list_id = -1;
-	const enum db_result antigravity = in_gravity(domain, abp_patterns, client, true, &list_id);
+	const enum db_result antigravity = in_gravity(domain, &abp_patterns, client, true, &list_id);
 	if(antigravity == FOUND)
 	{
 		log_debug(DEBUG_QUERIES, "Allowing query due to antigravity match (list ID %i)", list_id);
@@ -1335,7 +1337,7 @@ static bool check_domain_blocked(const char *domain,
 	}
 
 	// Check domains against gravity domains
-	const enum db_result gravity = in_gravity(domain, abp_patterns, client, false, &list_id);
+	const enum db_result gravity = in_gravity(domain, &abp_patterns, client, false, &list_id);
 	if(gravity == FOUND)
 	{
 		// Set new status

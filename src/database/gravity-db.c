@@ -1358,7 +1358,7 @@ cJSON *gen_abp_patterns(const char *domain)
 	return patterns;
 }
 
-enum db_result in_gravity(const char *domain, cJSON *abp_patterns, clientsData *client, const bool antigravity, int *domain_id)
+enum db_result in_gravity(const char *domain, cJSON **abp_patterns, clientsData *client, const bool antigravity, int *domain_id)
 {
 	// If list statement is not ready and cannot be initialized (e.g. no
 	// access to the database), we return false to prevent an FTL crash
@@ -1409,7 +1409,10 @@ enum db_result in_gravity(const char *domain, cJSON *abp_patterns, clientsData *
 	if(!gravity_abp_format)
 		return NOT_FOUND;
 
-	if(abp_patterns == NULL)
+	// Lazily generate ABP patterns on first need. This avoids heap
+	// allocations when the exact match above already decided about the
+	// result and we don't need to check ABP patterns at all.
+	if(*abp_patterns == NULL && (*abp_patterns = gen_abp_patterns(domain)) == NULL)
 	{
 		log_err("Failed to generate ABP patterns for domain \"%s\"", domain);
 		return LIST_NOT_AVAILABLE;
@@ -1417,7 +1420,7 @@ enum db_result in_gravity(const char *domain, cJSON *abp_patterns, clientsData *
 
 	// Check if any of the ABP patterns is in the (anti)gravity list
 	cJSON * abp_pattern = NULL;
-	cJSON_ArrayForEach(abp_pattern, abp_patterns)
+	cJSON_ArrayForEach(abp_pattern, *abp_patterns)
 	{
 		// Get pattern from array
 		const char *pattern = cJSON_GetStringValue(abp_pattern);
