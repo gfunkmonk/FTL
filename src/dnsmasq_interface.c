@@ -89,6 +89,9 @@ static enum query_status cacheStatus = QUERY_UNKNOWN;
 static int last_regex_idx = -1;
 static char *pihole_suffix = NULL;
 static char *hostname_suffix = NULL;
+static size_t pihole_suffix_len = 0;
+static size_t hostname_suffix_len = 0;
+static size_t hostname_len = 0;
 static char *cname_target = NULL;
 #define HOSTNAME "Pi-hole hostname"
 
@@ -591,25 +594,40 @@ size_t _FTL_make_answer(struct dns_header *header, char *limit, const size_t len
 
 static bool is_pihole_domain(const char *domain)
 {
+	// Cache plain hostname length on first call (independent of
+	// domain_suffix)
+	if(hostname_len == 0)
+		hostname_len = strlen(hostname());
+
+	// Build "pi.hole.<local suffix>" domain if not already built and if
+	// domain suffix is configured
 	if(!pihole_suffix && daemon->domain_suffix)
 	{
-		// Build "pi.hole.<local suffix>" domain
 		pihole_suffix = calloc(strlen(daemon->domain_suffix) + 9, sizeof(char));
 		strcpy(pihole_suffix, "pi.hole.");
 		strcat(pihole_suffix, daemon->domain_suffix);
+		pihole_suffix_len = strlen(pihole_suffix);
 		log_debug(DEBUG_QUERIES, "Domain suffix is \"%s\"", daemon->domain_suffix);
 	}
+	// Build "<hostname>.<local suffix>" domain if not already built and if
+	// domain suffix is configured
 	if(!hostname_suffix && daemon->domain_suffix)
 	{
-		// Build "<hostname>.<local suffix>" domain
 		hostname_suffix = calloc(strlen(hostname()) + strlen(daemon->domain_suffix) + 2, sizeof(char));
 		strcpy(hostname_suffix, hostname());
 		strcat(hostname_suffix, ".");
 		strcat(hostname_suffix, daemon->domain_suffix);
+		hostname_suffix_len = strlen(hostname_suffix);
 	}
-	return strcasecmp(domain, "pi.hole") == 0 || strcasecmp(domain, hostname()) == 0 ||
-	       (pihole_suffix && strcasecmp(domain, pihole_suffix) == 0) ||
-	       (hostname_suffix && strcasecmp(domain, hostname_suffix) == 0);
+
+	// Pre-filter with integer length comparison before any strcasecmp:
+	// in the common case (domain is not pi.hole/hostname), all four checks
+	// short-circuit after a single strlen + four integer comparisons.
+	const size_t dlen = strlen(domain);
+	return (dlen == 7u           && strcasecmp(domain, "pi.hole") == 0) ||
+	       (dlen == hostname_len && strcasecmp(domain, hostname()) == 0) ||
+	       (pihole_suffix   && dlen == pihole_suffix_len   && strcasecmp(domain, pihole_suffix) == 0) ||
+	       (hostname_suffix && dlen == hostname_suffix_len && strcasecmp(domain, hostname_suffix) == 0);
 }
 
 bool _FTL_new_query(const unsigned int flags, const char *name,
