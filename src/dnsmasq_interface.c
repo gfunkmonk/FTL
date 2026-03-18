@@ -66,7 +66,7 @@ static void print_flags(const unsigned int flags);
 #define query_set_reply(flags, reply, addr, query, now) _query_set_reply(flags, reply, addr, query, now, __FILE__, __LINE__)
 static void _query_set_reply(const unsigned int flags, const enum reply_type reply, const union all_addr *addr, queriesData *query,
                              const double now, const char *file, const int line);
-static bool FTL_check_blocking(const unsigned int queryID, const unsigned int domainID, const unsigned int clientID);
+static bool FTL_check_blocking(const unsigned int queryID, const unsigned int domainID, const unsigned int clientID, const char *domainstr);
 static void query_blocked(queriesData *query, domainsData *domain, clientsData *client, const enum query_status new_status);
 static void FTL_forwarded(const unsigned int flags, const char *name, const union all_addr *addr, unsigned short port, const int id, const char *file, const int line);
 static void FTL_reply(const unsigned int flags, const char *name, const union all_addr *addr, const char *arg, const int id, const char *file, const int line);
@@ -1012,7 +1012,7 @@ bool _FTL_new_query(const unsigned int flags, const char *name,
 	// Check if this should be blocked only for active queries
 	// (skipped for internally generated ones, e.g., DNSSEC)
 	if(!internal_query && querytype != TYPE_NONE)
-		blockDomain = FTL_check_blocking(queryID, domainID, clientID);
+		blockDomain = FTL_check_blocking(queryID, domainID, clientID, domainString);
 
 	// Store query in database
 	query->flags.database.changed = true;
@@ -1516,7 +1516,7 @@ static bool special_domain(const queriesData *query, const char *domain)
 	return false;
 }
 
-static bool FTL_check_blocking(const unsigned int queryID, const unsigned int domainID, const unsigned int clientID)
+static bool FTL_check_blocking(const unsigned int queryID, const unsigned int domainID, const unsigned int clientID, const char *domainstr)
 {
 	// Only check blocking conditions when global blocking is enabled
 	if(get_blockingstatus() == BLOCKING_DISABLED)
@@ -1567,8 +1567,8 @@ static bool FTL_check_blocking(const unsigned int queryID, const unsigned int do
 	log_debug(DEBUG_QUERIES, "Set global cache status to %d", cacheStatus);
 
 	// Skip the entire chain of tests if we already know the answer for this
-	// particular client
-	char *domainstr = (char*)getstr(domain->domainpos);
+	// particular client. Use the caller's already-lowercase stack copy rather
+	// than re-reading from SHM (avoids one getstr() dereference).
 	switch(blocking_status)
 	{
 		case QUERY_UNKNOWN:
@@ -1750,10 +1750,9 @@ static bool FTL_check_blocking(const unsigned int queryID, const unsigned int do
 
 	// when we reach this point: the query is not in FTL's cache (for this client)
 
-	// Make a local copy of the domain string. The string memory may get
-	// reorganized in the following. We cannot expect domainstr to remain
-	// valid for all time. Use strcpy_tolower which copies without
-	// zero-padding the remaining buffer (domains are already lowercase).
+	// Make a writable local copy; pointer arithmetic on domain_lower is used
+	// below (e.g. domain_lower + 6 for ESNI stripping). The source is the
+	// caller's stack buffer — already lowercase, no SHM lifetime concern.
 	char domain_lower[MAXDOMAINLEN];
 	strcpy_tolower(domain_lower, domainstr, sizeof(domain_lower));
 	const char *blockedDomain = domain_lower;
@@ -1958,7 +1957,7 @@ bool FTL_CNAME(const char *dst, const char *src, const int id)
 	const int clientID = query->clientID;
 
 	// Check per-client blocking for the child domain
-	const bool block = FTL_check_blocking(queryID, child_domainID, clientID);
+	const bool block = FTL_check_blocking(queryID, child_domainID, clientID, child_domain);
 
 	// If we find during a CNAME inspection that we want to block the entire chain,
 	// the originally queried domain itself was not counted as blocked. We have to
