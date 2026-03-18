@@ -59,6 +59,7 @@ typedef struct {
 	unsigned char magic;
 	struct upstream_flags {
 		bool new:1;
+		bool in_database:1;
 	} flags;
 	in_port_t port;
 	int count;
@@ -81,6 +82,7 @@ typedef struct {
 		bool found_group:1;
 		bool aliasclient:1;
 		bool rate_limited:1;
+		bool in_database:1;
 	} flags;
 	int count;
 	int blockedcount;
@@ -100,6 +102,9 @@ typedef struct {
 
 typedef struct {
 	unsigned char magic;
+	struct domain_flags {
+		bool in_database:1;
+	} flags;
 	int count;
 	int blockedcount;
 	int cname_refcount;

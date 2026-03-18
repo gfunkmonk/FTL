@@ -964,7 +964,14 @@ static void resolveClients(const bool onlynew, const bool force_refreshing)
 
 		// else:
 		// Store obtained host name (may be unchanged)
-		client->namepos = newnamepos;
+		if(client->namepos != newnamepos)
+		{
+			client->namepos = newnamepos;
+			// Reset in_database flag so the new (ip, name) pair
+			// gets inserted as new record into the client_by_id
+			// linking table on the next batch insertion of queries
+			client->flags.in_database = false;
+		}
 		// Mark entry as not new
 		client->flags.new = false;
 
