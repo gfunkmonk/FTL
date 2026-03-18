@@ -2148,8 +2148,6 @@ static void FTL_forwarded(const unsigned int flags, const char *name, const unio
 		// Correct reply timer if a response time has already been calculated
 		if(query->flags.response_calculated)
 		{
-			struct timeval response;
-			gettimeofday(&response, 0);
 			// Reset timer to measure how long it takes until an answer arrives
 			// If a response time has already been calculated, we
 			// can go back in time to measure both the initial cache
@@ -2760,10 +2758,6 @@ static enum query_status detect_blocked_IP(const unsigned short flags, const uni
 
 static void query_blocked(queriesData *query, domainsData *domain, clientsData *client, const enum query_status new_status)
 {
-	// Get response time
-	struct timeval response;
-	gettimeofday(&response, 0);
-
 	// Adjust counters if we recorded a non-blocking status
 	if(query->status == QUERY_FORWARDED && query->upstreamID > 0)
 	{
