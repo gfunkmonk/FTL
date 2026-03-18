@@ -1224,9 +1224,16 @@ void gravityDB_reload_groups(clientsData *client)
 }
 
 // Check if this client needs a rechecking of group membership
-// This client may be identified by something that wasn't there on its first query (hostname, MAC address, interface)
+// This client may be identified by something that wasn't there on its first
+// query (hostname, MAC address, interface)
 static void gravityDB_client_check_again(clientsData *client)
 {
+	// After NUM_RECHECKS the condition below is permanently false — skip
+	// the time() vDSO call entirely for mature clients (the overwhelming
+	// majority after the first three minutes of a client's lifetime)
+	if(client->reread_groups >= NUM_RECHECKS)
+		return;
+
 	const time_t diff = time(NULL) - client->firstSeen;
 	const unsigned char check_count = client->reread_groups + 1u;
 	if(check_count <= NUM_RECHECKS && diff > check_count * RECHECK_DELAY)
