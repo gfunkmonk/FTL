@@ -1499,10 +1499,17 @@ enum db_result in_gravity(const char *domain, struct abp_patterns *abp, clientsD
 	// Patterns are built on the fly in a stack buffer, avoiding any heap
 	// allocation that the old cJSON-based approach required.
 	const char *prefix = antigravity ? "@@||" : "||";
+	const size_t prefix_len = antigravity ? 4u : 2u;
 	for(unsigned int i = 0; i < abp->count; i++)
 	{
 		char pattern[MAXDOMAINLEN + 8]; // "@@||" + domain + "^" + NUL
-		snprintf(pattern, sizeof(pattern), "%s%s^", prefix, domain + abp->offsets[i]);
+		// Build pattern manually: prefix + domain-suffix + "^" + NUL
+		// Avoids snprintf format-string overhead for this tight inner loop.
+		const size_t suffix_len = strlen(domain + abp->offsets[i]);
+		memcpy(pattern, prefix, prefix_len);
+		memcpy(pattern + prefix_len, domain + abp->offsets[i], suffix_len);
+		pattern[prefix_len + suffix_len] = '^';
+		pattern[prefix_len + suffix_len + 1] = '\0';
 
 		log_debug(DEBUG_QUERIES, "Checking if \"%s\" is in %s (ABP)",
 		          pattern, listname);
