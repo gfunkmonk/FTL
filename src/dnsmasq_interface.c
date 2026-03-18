@@ -110,9 +110,12 @@ void FTL_hook(unsigned int flags, const char *name, const union all_addr *addr, 
 {
 	// Extract filename from path
 	const char *path = short_path(file);
-	const char *types = (flags & F_RR) ? querystr(arg, type) : "?";
-	log_debug(DEBUG_FLAGS, "Processing FTL hook from %s:%d (type: %s, name: \"%s\", id: %i)...", path, line, types, name, id);
-	print_flags(flags);
+	if(config.debug.flags.v.b)
+	{
+		const char *types = (flags & F_RR) ? querystr(arg, type) : "?";
+		log_debug(DEBUG_FLAGS, "Processing FTL hook from %s:%d (type: %s, name: \"%s\", id: %i)...", path, line, types, name, id);
+		print_flags(flags);
+	}
 
 	// The query ID may be negative if this is a TCP query
 	if(id < 0)
@@ -620,67 +623,35 @@ bool _FTL_new_query(const unsigned int flags, const char *name,
 	// Get timestamp
 	const double querytimestamp = double_time();
 
-	// Determine query type
+	// Determine query type via direct-mapped lookup table
+	// DNS wire types are 16-bit but standard types fit in [0,255].
+	// Uninitialized entries are 0; since all known mappings are non-zero, a
+	// zero result means either TYPE_NONE (qtype==0) or an unknown type
+	// (TYPE_OTHER).
+	static const uint8_t qtype_map[256] = {
+		[T_A]      = TYPE_A,
+		[T_NS]     = TYPE_NS,
+		[T_SOA]    = TYPE_SOA,
+		[T_PTR]    = TYPE_PTR,
+		[T_MX]     = TYPE_MX,
+		[T_TXT]    = TYPE_TXT,
+		[T_AAAA]   = TYPE_AAAA,
+		[T_SRV]    = TYPE_SRV,
+		[T_NAPTR]  = TYPE_NAPTR,
+		[T_DS]     = TYPE_DS,
+		[T_RRSIG]  = TYPE_RRSIG,
+		[T_DNSKEY] = TYPE_DNSKEY,
+		[64]       = TYPE_SVCB,  // draft-ietf-dnsop-svcb-https
+		[65]       = TYPE_HTTPS, // draft-ietf-dnsop-svcb-https
+		[T_ANY]    = TYPE_ANY,
+	};
 	enum query_type querytype;
-	switch(qtype)
-	{
-		case 0:
-			// Non-query, e.g., zone update
-			// dnsmasq does not support such non-queries. RFC5625
-			// does not specify how a resolver should behave when it
-			// does not support them. dnsmasq decided to reply with
-			// a NOTIMP reply to such non-queries
-			querytype = TYPE_NONE;
-			break;
-		case T_A:
-			querytype = TYPE_A;
-			break;
-		case T_AAAA:
-			querytype = TYPE_AAAA;
-			break;
-		case T_ANY:
-			querytype = TYPE_ANY;
-			break;
-		case T_SRV:
-			querytype = TYPE_SRV;
-			break;
-		case T_SOA:
-			querytype = TYPE_SOA;
-			break;
-		case T_PTR:
-			querytype = TYPE_PTR;
-			break;
-		case T_TXT:
-			querytype = TYPE_TXT;
-			break;
-		case T_NAPTR:
-			querytype = TYPE_NAPTR;
-			break;
-		case T_MX:
-			querytype = TYPE_MX;
-			break;
-		case T_DS:
-			querytype = TYPE_DS;
-			break;
-		case T_RRSIG:
-			querytype = TYPE_RRSIG;
-			break;
-		case T_DNSKEY:
-			querytype = TYPE_DNSKEY;
-			break;
-		case T_NS:
-			querytype = TYPE_NS;
-			break;
-		case 64: // Scn. 2 of https://datatracker.ietf.org/doc/draft-ietf-dnsop-svcb-https/
-			querytype = TYPE_SVCB;
-			break;
-		case 65: // Scn. 2 of https://datatracker.ietf.org/doc/draft-ietf-dnsop-svcb-https/
-			querytype = TYPE_HTTPS;
-			break;
-		default:
-			querytype = TYPE_OTHER;
-			break;
-	}
+	if(qtype == 0)
+		querytype = TYPE_NONE;
+	else if(qtype < 256 && qtype_map[qtype])
+		querytype = (enum query_type)qtype_map[qtype];
+	else
+		querytype = TYPE_OTHER;
 
 	// Check domain name received from dnsmasq
 	name = check_dnsmasq_name(name);
@@ -1760,10 +1731,10 @@ static bool FTL_check_blocking(const unsigned int queryID, const unsigned int do
 
 	// Make a local copy of the domain string. The string memory may get
 	// reorganized in the following. We cannot expect domainstr to remain
-	// valid for all time.
+	// valid for all time. Use strcpy_tolower which copies without
+	// zero-padding the remaining buffer (domains are already lowercase).
 	char domain_lower[MAXDOMAINLEN];
-	strncpy(domain_lower, domainstr, sizeof(domain_lower) - 1);
-	domain_lower[sizeof(domain_lower) - 1] = '\0';
+	strcpy_tolower(domain_lower, domainstr, sizeof(domain_lower));
 	const char *blockedDomain = domain_lower;
 
 	// Check exact whitelist for match
