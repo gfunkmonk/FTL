@@ -1039,20 +1039,11 @@ bool _FTL_new_query(const unsigned int flags, const char *name,
 void _FTL_iface(struct irec *recviface, const union all_addr *addr, const sa_family_t addrfamily,
                 const char *file, const int line)
 {
-	// Invalidate data we have from the last interface/query
-	// Set addresses to 0.0.0.0 and ::, respectively
-	memset(&next_iface.addr4, 0, sizeof(next_iface.addr4));
-	memset(&next_iface.addr6, 0, sizeof(next_iface.addr6));
-	next_iface.haveIPv4 = next_iface.haveIPv6 = false;
-
 	// Debug logging
 	log_debug(DEBUG_NETWORKING, "Interfaces: Called from %s:%d", short_path(file), line);
 
-	// Use dummy when interface record is not available
-	next_iface.name[0] = '-';
-	next_iface.name[1] = '\0';
-
 	// Check if we need to identify the receiving interface by its address
+	// before testing the cache (we need the resolved recviface pointer)
 	if(!recviface && addr &&
 	   ((addrfamily == AF_INET && addr->addr4.s_addr != INADDR_ANY) ||
 	    (addrfamily == AF_INET6 && !IN6_IS_ADDR_UNSPECIFIED(&addr->addr6))))
@@ -1117,8 +1108,32 @@ void _FTL_iface(struct irec *recviface, const union all_addr *addr, const sa_fam
 	if(!recviface)
 	{
 		log_debug(DEBUG_NETWORKING, "No receiving interface available at this point");
+		// Invalidate next_iface since we have no interface
+		memset(&next_iface.addr4, 0, sizeof(next_iface.addr4));
+		memset(&next_iface.addr6, 0, sizeof(next_iface.addr6));
+		next_iface.haveIPv4 = next_iface.haveIPv6 = false;
+		next_iface.name[0] = '-';
+		next_iface.name[1] = '\0';
 		return;
 	}
+
+	// Cache: if the resolved interface is the same as last time, skip the
+	// expensive second loop (which iterates all interfaces to collect IPv4
+	// and IPv6 addresses).  The pointer is stable within dnsmasq's
+	// daemon->interfaces list and is invalidated on SIGHUP/restart.
+	static struct irec *cached_recviface = NULL;
+	if(recviface == cached_recviface)
+	{
+		log_debug(DEBUG_NETWORKING, "Interface unchanged, using cached result");
+		return;
+	}
+
+	// Interface changed — invalidate and recompute
+	memset(&next_iface.addr4, 0, sizeof(next_iface.addr4));
+	memset(&next_iface.addr6, 0, sizeof(next_iface.addr6));
+	next_iface.haveIPv4 = next_iface.haveIPv6 = false;
+	next_iface.name[0] = '-';
+	next_iface.name[1] = '\0';
 
 	// Determine addresses of this interface, we have to loop over all interfaces as
 	// recviface will always only contain *either* IPv4 or IPv6 information
@@ -1215,6 +1230,9 @@ void _FTL_iface(struct irec *recviface, const union all_addr *addr, const sa_fam
 			break;
 		}
 	}
+
+	// Update cache so subsequent queries on the same interface skip the loops
+	cached_recviface = recviface;
 }
 
 static void check_pihole_PTR(char *domain)
