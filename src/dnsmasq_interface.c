@@ -929,7 +929,7 @@ bool _FTL_new_query(const unsigned int flags, const char *name,
 	// Process interface information of client (if available)
 	// Skip interface name length 1 to skip "-". No real interface should
 	// have a name with a length of 1...
-	if(!internal_query && strlen(interface) > 1)
+	if(!internal_query && interface[0] != '\0' && interface[1] != '\0')
 	{
 		if(client->ifacepos == 0u)
 		{
