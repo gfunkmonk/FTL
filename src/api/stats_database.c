@@ -261,7 +261,7 @@ int api_stats_database_top_items(struct ftl_conn *api)
 		{
 			// Get clients and count of queries (blocked)
 			querystr = "SELECT COUNT(*),c.ip,c.name AS cnt FROM query_storage q "
-			           "JOIN client_by_id c ON c.id = q.client"
+			           "JOIN client_by_id c ON c.id = q.client "
 			           "WHERE timestamp >= :from AND timestamp <= :until "
 			           "AND " FILTER_STATUS_BLOCKED " "
 			           "GROUP by q.client";
@@ -860,7 +860,7 @@ int api_stats_database_upstreams(struct ftl_conn *api)
 	statistics = JSON_NEW_OBJECT();
 	JSON_ADD_NUMBER_TO_OBJECT(statistics, "response", 0);
 	JSON_ADD_NUMBER_TO_OBJECT(statistics, "variance", 0);
-	JSON_ADD_ITEM_TO_OBJECT(cached, "statistics", statistics);
+	JSON_ADD_ITEM_TO_OBJECT(blocked, "statistics", statistics);
 	JSON_ADD_ITEM_TO_ARRAY(upstreams, blocked);
 
 	// Close (= unlock) database connection

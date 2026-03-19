@@ -132,7 +132,7 @@ int api_info_database(struct ftl_conn *api)
 
 	cJSON *group = JSON_NEW_OBJECT();
 	JSON_ADD_NUMBER_TO_OBJECT(group, "gid", st.st_gid); // GID
-	const struct group *gr = getgrgid(st.st_uid);
+	const struct group *gr = getgrgid(st.st_gid);
 	if(gr != NULL)
 	{
 		JSON_COPY_STR_TO_OBJECT(group, "name", gr->gr_name); // Group name
