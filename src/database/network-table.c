@@ -579,7 +579,7 @@ static bool insert_netDB_device(sqlite3 *db, const char *hwaddr, const time_t fi
 	}
 
 	// Bind firstSeen to prepared statement (2nd argument)
-	if((rc = sqlite3_bind_int(query_stmt, 2, firstSeen)) != SQLITE_OK)
+	if((rc = sqlite3_bind_int64(query_stmt, 2, firstSeen)) != SQLITE_OK)
 	{
 		log_err("insert_netDB_device(\"%s\",%lu, %lu, %u, \"%s\"): Failed to bind firstSeen (error %d): %s",
 		        hwaddr, (unsigned long)firstSeen, (unsigned long)lastQuery, numQueriesARP, macVendor, rc, sqlite3_errstr(rc));
@@ -587,7 +587,7 @@ static bool insert_netDB_device(sqlite3 *db, const char *hwaddr, const time_t fi
 	}
 
 	// Bind lastQuery to prepared statement (3rd argument)
-	if((rc = sqlite3_bind_int(query_stmt, 3, lastQuery)) != SQLITE_OK)
+	if((rc = sqlite3_bind_int64(query_stmt, 3, lastQuery)) != SQLITE_OK)
 	{
 		log_err("insert_netDB_device(\"%s\",%lu, %lu, %u, \"%s\"): Failed to bind lastQuery (error %d): %s",
 		        hwaddr, (unsigned long)firstSeen, (unsigned long)lastQuery, numQueriesARP, macVendor, rc, sqlite3_errstr(rc));
@@ -1162,7 +1162,8 @@ static bool add_local_interfaces_to_network_table(sqlite3 *db, time_t now, unsig
 
 				// Try to import query data from a possibly previously existing mock-device
 				int mockID = find_device_by_mock_hwaddr(db, ipaddr);
-				int lastQuery = 0, firstSeen = now, numQueries = 0;
+				time_t firstSeen = now, lastQuery = 0;
+				int numQueries = 0;
 				if(mockID >= 0)
 				{
 					lastQuery = db_query_int_int(db, "SELECT lastQuery from network where id = ?1", mockID);
