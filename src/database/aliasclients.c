@@ -52,6 +52,8 @@ bool create_aliasclients_table(sqlite3 *db)
 static void recompute_aliasclient(const int aliasclientID)
 {
 	clientsData *aliasclient = getClient(aliasclientID, true);
+	if(aliasclient == NULL)
+		return;
 
 	log_debug(DEBUG_ALIASCLIENTS, "Recomputing alias-client \"%s\" (%s)...",
 	          getstr(aliasclient->namepos), getstr(aliasclient->ippos));
