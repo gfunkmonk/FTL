@@ -583,6 +583,7 @@ void prettyprint_time(char *buf, unsigned int t)
   else
     {
       unsigned int x, p = 0;
+      buf[0] = '\0';
        if ((x = t/86400))
 	p += sprintf(&buf[p], "%ud", x);
        if ((x = (t/3600)%24))
