@@ -914,6 +914,8 @@ int db_query_int_int(sqlite3 *db, const char* querystr, const int arg)
 	{
 		log_err("Encountered bind error in db_query_int(\"%s\"): %s",
 		        querystr, sqlite3_errstr(rc));
+		sqlite3_finalize(stmt);
+		return DB_FAILED;
 	}
 
 	rc = sqlite3_step(stmt);
@@ -961,6 +963,8 @@ int db_query_int_str(sqlite3 *db, const char* querystr, const char *arg)
 	{
 		log_err("Encountered bind error in db_query_int(\"%s\"): %s",
 		        querystr, sqlite3_errstr(rc));
+		sqlite3_finalize(stmt);
+		return DB_FAILED;
 	}
 
 	rc = sqlite3_step(stmt);
