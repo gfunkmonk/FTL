@@ -1881,7 +1881,7 @@ bool updateMACVendorRecords(sqlite3 *db)
 		const int id = sqlite3_column_int(stmt, 0);
 
 		// Get vendor for MAC
-		char vendor[MAXVENDORLEN];
+		char vendor[MAXVENDORLEN] = { 0 };
 		getMACVendor((char*)sqlite3_column_text(stmt, 1), vendor);
 
 		// Prepare statement
@@ -2541,7 +2541,7 @@ bool networkTable_readIPsGetRecord(sqlite3_stmt *read_stmt, network_addresses_re
 		network_addresses->ip = (char*)sqlite3_column_text(read_stmt, 0);
 		network_addresses->lastSeen = sqlite3_column_int64(read_stmt, 1);
 		network_addresses->name = (char*)sqlite3_column_text(read_stmt, 2);
-		network_addresses->nameUpdated = sqlite3_column_int64(read_stmt, 1);
+		network_addresses->nameUpdated = sqlite3_column_int64(read_stmt, 3);
 		return true;
 	}
 
