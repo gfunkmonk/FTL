@@ -340,7 +340,7 @@ bool validate_regex_array(union conf_value *val, const char *key, char err[VALID
 {
 	if(val == NULL || !cJSON_IsArray(val->json))
 	{
-		strncat(err, "%s: not an array", VALIDATOR_ERRBUF_LEN);
+		snprintf(err, VALIDATOR_ERRBUF_LEN, "%s: not an array", key);
 		return false;
 	}
 
