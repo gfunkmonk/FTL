@@ -235,8 +235,10 @@ bool __attribute__((pure)) resolve_names(void)
 // Return if we want to resolve this type of address to a name
 bool __attribute__((pure)) resolve_this_name(const char *ipaddr)
 {
-	if(!config.resolver.resolveIPv4.v.b ||
-	  (!config.resolver.resolveIPv6.v.b && strstr(ipaddr,":") != NULL))
+	const bool is_ipv6 = strstr(ipaddr, ":") != NULL;
+	if(!config.resolver.resolveIPv4.v.b && !is_ipv6)
+		return false;
+	if(!config.resolver.resolveIPv6.v.b && is_ipv6)
 		return false;
 	return true;
 }
