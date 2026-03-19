@@ -413,7 +413,7 @@ int api_client_suggestions(struct ftl_conn *api)
 		cJSON *client = JSON_NEW_OBJECT();
 		JSON_COPY_STR_TO_OBJECT(client, "hwaddr", sqlite3_column_text(stmt, 0));
 		JSON_COPY_STR_TO_OBJECT(client, "macVendor", sqlite3_column_text(stmt, 1));
-		JSON_ADD_NUMBER_TO_OBJECT(client, "lastQuery", sqlite3_column_int(stmt, 2));
+		JSON_ADD_NUMBER_TO_OBJECT(client, "lastQuery", sqlite3_column_int64(stmt, 2));
 		JSON_COPY_STR_TO_OBJECT(client, "addresses", sqlite3_column_text(stmt, 3));
 		JSON_COPY_STR_TO_OBJECT(client, "names", sqlite3_column_text(stmt, 4));
 		JSON_ADD_ITEM_TO_ARRAY(clients, client);
