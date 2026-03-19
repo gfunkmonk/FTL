@@ -2446,8 +2446,8 @@ bool networkTable_readDevicesGetRecord(sqlite3_stmt *read_stmt, network_record *
 		network->id = sqlite3_column_int(read_stmt, 0);
 		network->hwaddr = (char*)sqlite3_column_text(read_stmt, 1);
 		network->iface = (char*)sqlite3_column_text(read_stmt, 2);
-		network->firstSeen = sqlite3_column_int(read_stmt, 3);
-		network->lastQuery = sqlite3_column_int(read_stmt, 4);
+		network->firstSeen = sqlite3_column_int64(read_stmt, 3);
+		network->lastQuery = sqlite3_column_int64(read_stmt, 4);
 		network->numQueries = sqlite3_column_int(read_stmt, 5);
 		network->macVendor = (char*)sqlite3_column_text(read_stmt, 6);
 		return true;
