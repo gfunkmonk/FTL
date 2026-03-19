@@ -555,7 +555,7 @@ int api_history_database_clients(struct ftl_conn *api)
 	}
 
 	// Bind from to prepared statement
-	if((rc = sqlite3_bind_int(stmt, 2, from)) != SQLITE_OK)
+	if((rc = sqlite3_bind_double(stmt, 2, from)) != SQLITE_OK)
 	{
 		log_err("api_stats_database_clients(): Failed to bind from (error %d) - %s",
 		        rc, sqlite3_errstr(rc));
@@ -569,7 +569,7 @@ int api_history_database_clients(struct ftl_conn *api)
 	}
 
 	// Bind until to prepared statement
-	if((rc = sqlite3_bind_int(stmt, 3, until)) != SQLITE_OK)
+	if((rc = sqlite3_bind_double(stmt, 3, until)) != SQLITE_OK)
 	{
 		log_err("api_stats_database_clients(): Failed to bind until (error %d) - %s",
 		        rc, sqlite3_errstr(rc));
