@@ -827,11 +827,12 @@ bool gravityDB_prepare_client_statements(clientsData *client)
 	}
 
 	// Prepare allowlist statement
-	// We use SELECT EXISTS() as this is known to efficiently use the index
-	// We are only interested in whether the domain exists or not in the
-	// list but don't care about duplicates or similar. SELECT EXISTS(...)
-	// returns true as soon as it sees the first row from the query inside
-	// of EXISTS().
+	// The query uses a plain SELECT rather than SELECT EXISTS():
+	// first-match semantics are achieved by calling sqlite3_step() exactly
+	// once before sqlite3_reset(). SQLite's incremental nested-loop
+	// execution returns the first qualifying row and stops — equivalent to
+	// LIMIT 1 — without ever materialising the full result set. The
+	// returned id is used to record which list entry triggered the match.
 	log_debug(DEBUG_DATABASE, "gravityDB_open(): Preparing vw_allowlist statement for client %s", clientip);
 	if(!build_client_querystr(querystr, querystrsz, "vw_allowlist", "id", client_groups))
 	{
