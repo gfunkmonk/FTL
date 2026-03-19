@@ -111,12 +111,13 @@ int api_history_database(struct ftl_conn *api)
 	// Loop over returned data and accumulate results
 	cJSON *history = JSON_NEW_ARRAY();
 	cJSON *item = NULL;
-	unsigned int previous_timeslot = 0u, blocked = 0u, total = 0u, cached = 0u, forwarded = 0u;
+	time_t previous_timeslot = 0u;
+	unsigned int blocked = 0u, total = 0u, cached = 0u, forwarded = 0u;
 	while((rc = sqlite3_step(stmt)) == SQLITE_ROW)
 	{
 		// Get timestamp and derive timeslot from it
-		const unsigned int timestamp = sqlite3_column_int(stmt, 0);
-		const unsigned int timeslot = timestamp - timestamp % interval;
+		const time_t timestamp = sqlite3_column_int64(stmt, 0);
+		const time_t timeslot = timestamp - timestamp % interval;
 		// Begin new array item for each new timeslot
 		if(timeslot != previous_timeslot)
 		{
@@ -584,13 +585,13 @@ int api_history_database_clients(struct ftl_conn *api)
 
 	cJSON *item = NULL;
 	cJSON *data = NULL;
-	unsigned int previous_timeslot = 0u;
+	time_t previous_timeslot = 0u;
 	cJSON *over_time = JSON_NEW_ARRAY();
 	while((rc = sqlite3_step(stmt)) == SQLITE_ROW)
 	{
 		// Get timestamp and derive timeslot from it
-		const unsigned int timestamp = sqlite3_column_int(stmt, 0);
-		const unsigned int timeslot = timestamp - timestamp % interval;
+		const time_t timestamp = sqlite3_column_int64(stmt, 0);
+		const time_t timeslot = timestamp - timestamp % interval;
 		// Begin new array item for each new timeslot
 		if(timeslot != previous_timeslot)
 		{
