@@ -882,7 +882,7 @@ char *option_string(int prot, unsigned int opt, unsigned char *val, int opt_len,
 			 buf[j++] = c;
 		     }
 		    i = l;
-		    if (val[i] != 0 && j < buf_len)
+		    if (i < opt_len && val[i] != 0 && j < buf_len)
 		      buf[j++] = '.';
 		  }
 	      }
