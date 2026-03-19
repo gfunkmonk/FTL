@@ -497,6 +497,8 @@ void change_clientcount(clientsData *client, const int total, const int blocked,
 		if(client->aliasclient_id > -1)
 		{
 			clientsData *aliasclient = getClient(client->aliasclient_id, true);
+			if(aliasclient == NULL)
+				return;
 			aliasclient->count += total;
 			aliasclient->blockedcount += blocked;
 			if(overTimeIdx > -1 && (unsigned int)overTimeIdx < OVERTIME_SLOTS)
