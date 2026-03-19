@@ -1000,7 +1000,7 @@ int expand_workspace_real(const char *func, unsigned int line, unsigned char ***
   if (!(p = whine_realloc_real("expand_workspace", func, line, *wkspc, new * sizeof(unsigned char *))))
     return 0;
 
-  memset(p+old, 0, new-old);
+  memset(p+old, 0, (new-old) * sizeof(unsigned char *));
   
   *wkspc = p;
   *szp = new;
