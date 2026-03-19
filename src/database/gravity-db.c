@@ -2219,6 +2219,7 @@ bool gravityDB_readTable(const enum gravity_list_type listtype,
 		{
 			log_err("Failed to allocate memory for like_name");
 			*message = "Failed to allocate memory for like_name";
+			free(querystr);
 			return false;
 		}
 		snprintf(like_name, maxlen, "%%%s%%", item);
