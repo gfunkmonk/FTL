@@ -59,7 +59,11 @@ int api_history_database(struct ftl_conn *api)
 	if( rc != SQLITE_OK ){
 		log_err("api_stats_database_history() - SQL error prepare (%i): %s",
 		        rc, sqlite3_errstr(rc));
-		return false;
+		dbclose(&db);
+		return send_json_error(api, 500,
+		                       "internal_error",
+		                       "Failed to prepare statement",
+		                       NULL);
 	}
 
 	// Bind interval to prepared statement
