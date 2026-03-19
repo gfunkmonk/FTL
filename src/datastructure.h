@@ -111,6 +111,7 @@ typedef struct {
 	int blockedcount;
 	int cname_refcount;
 	int db_id;
+	unsigned int id;
 	uint32_t hash;
 	size_t domainpos;
 	double lastQuery;

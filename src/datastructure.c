@@ -307,6 +307,8 @@ int _findDomainID(const char *domainString, const bool count, int line, const ch
 
 	// Set magic byte
 	domain->magic = MAGICBYTE;
+	// Set ID
+	domain->id = domainID;
 	// Set its counter to 1 only if this domain is to be counted
 	// Domains only encountered during CNAME inspection are NOT counted here
 	domain->count = count ? 1 : 0;

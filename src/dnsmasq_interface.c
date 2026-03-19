@@ -66,7 +66,7 @@ static void print_flags(const unsigned int flags);
 #define query_set_reply(flags, reply, addr, query, now) _query_set_reply(flags, reply, addr, query, now, __FILE__, __LINE__)
 static void _query_set_reply(const unsigned int flags, const enum reply_type reply, const union all_addr *addr, queriesData *query,
                              const double now, const char *file, const int line);
-static bool FTL_check_blocking(const unsigned int queryID, const unsigned int domainID, const unsigned int clientID, const char *domainstr);
+static bool FTL_check_blocking(const char *domainstr, queriesData *query, clientsData *client, domainsData *domain, DNSCacheData *dns_cache);
 static void query_blocked(queriesData *query, domainsData *domain, clientsData *client, const enum query_status new_status);
 static void FTL_forwarded(const unsigned int flags, const char *name, const union all_addr *addr, unsigned short port, const int id, const char *file, const int line);
 static void FTL_reply(const unsigned int flags, const char *name, const union all_addr *addr, const char *arg, const int id, const char *file, const int line);
@@ -1012,7 +1012,7 @@ bool _FTL_new_query(const unsigned int flags, const char *name,
 	// Check if this should be blocked only for active queries
 	// (skipped for internally generated ones, e.g., DNSSEC)
 	if(!internal_query && querytype != TYPE_NONE)
-		blockDomain = FTL_check_blocking(queryID, domainID, clientID, domainString);
+		blockDomain = FTL_check_blocking(domainString, query, client, domain, dns_cache_entry);
 
 	// Store query in database
 	query->flags.database.changed = true;
@@ -1516,7 +1516,7 @@ static bool special_domain(const queriesData *query, const char *domain)
 	return false;
 }
 
-static bool FTL_check_blocking(const unsigned int queryID, const unsigned int domainID, const unsigned int clientID, const char *domainstr)
+static bool FTL_check_blocking(const char *domainstr, queriesData *query, clientsData *client, domainsData *domain, DNSCacheData *dns_cache)
 {
 	// Only check blocking conditions when global blocking is enabled
 	if(get_blockingstatus() == BLOCKING_DISABLED)
@@ -1524,21 +1524,10 @@ static bool FTL_check_blocking(const unsigned int queryID, const unsigned int do
 		return false;
 	}
 
-	// Get query, domain and client pointers
-	queriesData *query  = getQuery(queryID, true);
-	domainsData *domain = getDomain(domainID, true);
-	clientsData *client = getClient(clientID, true);
-	if(query == NULL || domain == NULL || client == NULL)
+	// Callers supply pre-fetched pointers to avoid redundant SHM lookups.
+	if(query == NULL || domain == NULL || client == NULL || dns_cache == NULL)
 	{
-		log_err("No memory available, skipping query analysis");
-		return false;
-	}
-
-	// Get cache pointer
-	DNSCacheData *dns_cache = getDNSCache(query->cacheID, true);
-	if(dns_cache == NULL)
-	{
-		log_err("No memory available, skipping query analysis");
+		log_err("Not enough info, skipping query analysis");
 		return false;
 	}
 
@@ -1559,7 +1548,7 @@ static bool FTL_check_blocking(const unsigned int queryID, const unsigned int do
 	// Check if the cache record we have applies to the current query
 	// If not, ensure we re-check the domain (happens during CNAME inspection)
 	enum query_status blocking_status = QUERY_UNKNOWN;
-	if(query->clientID == clientID && query->domainID == domainID)
+	if(query->clientID == client->id && query->domainID == domain->id)
 		blocking_status = dns_cache->blocking_status;
 
 	// Memorize blocking status DNS cache for the domain/client combination
@@ -1950,8 +1939,18 @@ bool FTL_CNAME(const char *dst, const char *src, const int id)
 	// belongs to the same client)
 	const int clientID = query->clientID;
 
+	clientsData *client = getClient(clientID, true);
+	DNSCacheData *dns_cache = getDNSCache(query->cacheID, true);
+	domainsData *child_domain_data = getDomain(child_domainID, true);
+	if(client == NULL || dns_cache == NULL)
+	{
+		unlock_shm();
+		log_err("No memory available, skipping CNAME blocking analysis");
+		return false;
+	}
+
 	// Check per-client blocking for the child domain
-	const bool block = FTL_check_blocking(queryID, child_domainID, clientID, child_domain);
+	const bool block = FTL_check_blocking(child_domain, query, client, child_domain_data, dns_cache);
 
 	// If we find during a CNAME inspection that we want to block the entire chain,
 	// the originally queried domain itself was not counted as blocked. We have to
@@ -1973,7 +1972,6 @@ bool FTL_CNAME(const char *dst, const char *src, const int id)
 
 		// Store domain that was the reason for blocking the entire chain
 		query->CNAME_domainID = child_domainID;
-		domainsData *child_domain_data = getDomain(child_domainID, true);
 		if(child_domain_data != NULL)
 			child_domain_data->cname_refcount++;
 
