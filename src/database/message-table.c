@@ -459,6 +459,7 @@ static int _add_message(const enum message_type type,
 			log_err("add_message(type=%u, message=%s) - Failed to bind argument %zu (type %u): %s",
 			        type, message, 3 + j, datatype, sqlite3_errstr(rc));
 			sqlite3_finalize(stmt);
+			stmt = NULL;
 			checkFTLDBrc(rc);
 			va_end(ap);
 			goto end_of_add_message;
