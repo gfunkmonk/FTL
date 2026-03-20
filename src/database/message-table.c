@@ -901,7 +901,7 @@ static void format_connection_error(char *plain, const int sizeof_plain, char *h
 		return;
 	}
 
-	if(snprintf(html, sizeof_html, "Connection error (<strong>%s</strong>): %s (<strong>%s</strong>)", server, reason, error) > sizeof_html)
+	if(snprintf(html, sizeof_html, "Connection error (<strong>%s</strong>): %s (<strong>%s</strong>)", escaped_server, escaped_reason, escaped_error) > sizeof_html)
 		log_warn("format_connection_error(): Buffer too small to hold HTML message, warning truncated");
 
 	free(escaped_reason);
