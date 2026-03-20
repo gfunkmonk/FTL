@@ -2847,7 +2847,7 @@ bool gravity_updated(void)
 	if(rc != SQLITE_OK)
 	{
 		log_err("gravity_updated(): %s - Cannot set busy handler: %s", config.files.gravity.v.s, sqlite3_errstr(rc));
-		gravityDB_close();
+		sqlite3_close(db);
 		return false;
 	}
 
