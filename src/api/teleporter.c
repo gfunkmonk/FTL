@@ -857,6 +857,7 @@ static int process_received_tar_gz(struct ftl_conn *api, struct upload_data *dat
 		if(remove(path) != 0 && errno != ENOENT)
 			log_err("Unable to remove file \"%s\": %s", path, strerror(errno));
 
+		free(path);
 		free(fname);
 	}
 
