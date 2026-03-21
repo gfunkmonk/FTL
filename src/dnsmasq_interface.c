@@ -2324,7 +2324,6 @@ static void update_upstream(queriesData *query, const int id)
 static void FTL_reply(const unsigned int flags, const char *name, const union all_addr *addr,
                       const char *arg, const int id, const char *file, const int line)
 {
-	const double now = double_time();
 	// If domain is "pi.hole", we skip this query
 	// We compare case-insensitive here
 	// Hint: name can be NULL, e.g. for NODATA/NXDOMAIN replies
@@ -2332,6 +2331,11 @@ static void FTL_reply(const unsigned int flags, const char *name, const union al
 	{
 		return;
 	}
+	// Defer double_time() until after the pi.hole early exit above: that
+	// path returns immediately without using 'now', so computing it first
+	// would waste a clock_gettime vDSO call for every pi.hole reply
+	// (web interface, API, health checks).
+	const double now = double_time();
 
 	// Lock shared memory
 	lock_shm();
