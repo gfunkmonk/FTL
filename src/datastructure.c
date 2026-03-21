@@ -45,7 +45,13 @@ void strcpy_tolower(char *dst, const char *src, size_t dstsize)
 {
 	const char *end = dst + dstsize - 1;
 	for(; *src && dst < end; ++src, ++dst)
-		*dst = tolower((unsigned char)*src);
+		// DNS domain names are pure ASCII. Use a branchless bit-trick
+		// instead of the locale-aware tolower() from <ctype.h>, which
+		// on glibc involves a two-pointer-dereference table lookup and
+		// on musl may be an actual function call. The '| 0x20' trick
+		// converts uppercase A-Z to lowercase a-z by setting bit 5;
+		// for all other ASCII characters the result is identical.
+		*dst = (*src >= 'A' && *src <= 'Z') ? (*src | 0x20) : *src;
 	*dst = '\0';
 }
 
