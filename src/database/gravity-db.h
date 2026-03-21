@@ -86,4 +86,6 @@ bool gravityDB_edit_groups(const enum gravity_list_type listtype, cJSON *groups,
 
 time_t gravity_last_updated(void) __attribute__((pure));
 
+void gravityDB_dump_perf_stats(void);
+
 #endif //GRAVITY_H

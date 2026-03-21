@@ -61,6 +61,9 @@
 // init_api_sessions()
 #include "api/api.h"
 
+// Public prototypes (defined in this file, called from other translation units)
+void FTL_dump_cache_stats(void);
+
 // Private prototypes
 static void print_flags(const unsigned int flags);
 #define query_set_reply(flags, reply, addr, query, now) _query_set_reply(flags, reply, addr, query, now, __FILE__, __LINE__)
@@ -93,6 +96,14 @@ static size_t pihole_suffix_len = 0;
 static size_t hostname_suffix_len = 0;
 static size_t hostname_len = 0;
 static char *cname_target = NULL;
+
+// FTL DNS cache hit/miss counters.
+// A "hit" means the (domain, client, query-type) tuple was already in FTL's
+// cache so gravity.db was not queried at all. A "miss" triggers a full set of
+// gravity/denylist/allowlist lookups. Reset by FTL_dump_cache_stats().
+static uint64_t ftl_cache_hits = 0;
+static uint64_t ftl_cache_misses = 0;
+
 #define HOSTNAME "Pi-hole hostname"
 
 // Fork-private copy of the interface data the most recent query came from
@@ -106,6 +117,27 @@ static struct {
 
 // Fork-private copy of the server data the most recent reply came from
 static union mysockaddr last_server = {};
+
+void FTL_dump_cache_stats(void)
+{
+	const uint64_t total = ftl_cache_hits + ftl_cache_misses;
+	if(total == 0)
+	{
+		log_debug(DEBUG_PERFORMANCE, "FTL cache stats: no queries in last 5 minutes");
+	}
+	else
+	{
+		log_debug(DEBUG_PERFORMANCE,
+		          "FTL cache stats: %"PRIu64" queries, "
+		          "%"PRIu64" hits (%.1f%%), %"PRIu64" misses (%.1f%%)",
+		          total,
+		          ftl_cache_hits,  100.0 * (double)ftl_cache_hits  / (double)total,
+		          ftl_cache_misses, 100.0 * (double)ftl_cache_misses / (double)total);
+	}
+	// Reset counters for the next 5-minute window
+	ftl_cache_hits = 0;
+	ftl_cache_misses = 0;
+}
 
 const char *flagnames[] = {"F_IMMORTAL ", "F_NAMEP ", "F_REVERSE ", "F_FORWARD ", "F_DHCP ", "F_NEG ", "F_HOSTS ", "F_IPV4 ", "F_IPV6 ", "F_BIGNAME ", "F_NXDOMAIN ", "F_CNAME ", "F_DNSKEY ", "F_CONFIG ", "F_DS ", "F_DNSSECOK ", "F_UPSTREAM ", "F_RRNAME ", "F_SERVER ", "F_QUERY ", "F_NOERR ", "F_AUTH ", "F_DNSSEC ", "F_KEYTAG ", "F_SECSTAT ", "F_NO_RR ", "F_IPSET ", "F_NOEXTRA ", "F_DOMAINSRV", "F_RCODE", "F_RR", "F_STALE" };
 
@@ -1554,6 +1586,15 @@ static bool FTL_check_blocking(const char *domainstr, queriesData *query, client
 	// Memorize blocking status DNS cache for the domain/client combination
 	cacheStatus = blocking_status;
 	log_debug(DEBUG_QUERIES, "Set global cache status to %d", cacheStatus);
+
+	// Count cache hits (known result, skip gravity.db) vs misses (full lookup needed)
+	if(config.debug.performance.v.b)
+	{
+		if(blocking_status != QUERY_UNKNOWN)
+			ftl_cache_hits++;
+		else
+			ftl_cache_misses++;
+	}
 
 	// Skip the entire chain of tests if we already know the answer for this
 	// particular client. Use the caller's already-lowercase stack copy rather
