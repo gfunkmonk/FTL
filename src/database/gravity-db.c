@@ -290,6 +290,30 @@ static bool gravityDB_open(void)
 		// Non-fatal: gravity lookups continue with regular I/O
 	}
 
+	// Pre-warm: advise kernel to read gravity.db into page cache
+	// asynchronously. This eliminates cold-start page faults for the
+	// first DNS queries after restart or after `pihole -g`.
+	//
+	// Programs can use posix_fadvise() to announce an intention to access
+	// file data in a specific pattern in the future, thus allowing the
+	// kernel to perform appropriate optimizations.
+	//
+	// POSIX_FADV_WILLNEED indicates specified data will be accessed in the
+	// near future. It initiates a nonblocking read of the specified region
+	// into the page cache. The amount of data read may be decreased by the
+	// kernel depending on virtual memory load. (A few megabytes will
+	// usually be fully satisfied, and more is rarely useful.)
+	{
+		int warmup_fd = open(config.files.gravity.v.s, O_RDONLY);
+		if(warmup_fd >= 0)
+		{
+			struct stat warmup_st;
+			if(fstat(warmup_fd, &warmup_st) == 0)
+				posix_fadvise(warmup_fd, 0, warmup_st.st_size, POSIX_FADV_WILLNEED);
+			close(warmup_fd);
+		}
+	}
+
 	// Prepare private vector of statements for this process (might be a TCP fork!)
 	if(allowlist_stmt == NULL)
 		allowlist_stmt = new_sqlite3_stmt_vec(counters->clients);
