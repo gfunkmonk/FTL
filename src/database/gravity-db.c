@@ -52,6 +52,45 @@ static sqlite3_stmt* table_stmt = NULL;
 bool gravityDB_opened = false;
 static bool gravity_abp_format = false;
 
+// Gravity lookup performance statistics.
+// All lookups happen under the SHM lock, so no atomic operations are needed.
+// Counters are reset each time gravityDB_dump_perf_stats() is called (every 5 min).
+#define GRAVITY_STATS_GRAVITY         0
+#define GRAVITY_STATS_ANTIGRAVITY     1
+#define GRAVITY_STATS_GRAVITY_ABP     2
+#define GRAVITY_STATS_ANTIGRAVITY_ABP 3
+#define GRAVITY_STATS_DENYLIST        4
+#define GRAVITY_STATS_ALLOWLIST       5
+static struct {
+	uint64_t calls;    // number of domain_in_list() invocations
+	uint64_t total_us; // cumulative microseconds
+	uint64_t max_us;   // single-call maximum in us
+	uint64_t slow;     // calls that took more than 1 ms
+} gravity_perf[6];
+
+// Wrap a single domain_in_list() call with wall-clock timing.
+// result_var must be a writable lvalue; slot is one of GRAVITY_STATS_*.
+// When debug.performance is disabled the macro reduces to a plain call with
+// no overhead — no clock_gettime(), no counter updates, no branches.
+#define GRAVITY_TIMED_LOOKUP(result_var, call_expr, slot) \
+do { \
+	if(config.debug.performance.v.b) \
+	{ \
+		struct timespec _ts0, _ts1; \
+		clock_gettime(CLOCK_MONOTONIC, &_ts0); \
+		(result_var) = (call_expr); \
+		clock_gettime(CLOCK_MONOTONIC, &_ts1); \
+		const uint64_t _us = (uint64_t)(_ts1.tv_sec - _ts0.tv_sec) * 1000000u \
+		                   + (uint64_t)(_ts1.tv_nsec - _ts0.tv_nsec) / 1000u; \
+		gravity_perf[(slot)].calls++; \
+		gravity_perf[(slot)].total_us += _us; \
+		if(_us > gravity_perf[(slot)].max_us) gravity_perf[(slot)].max_us = _us; \
+		if(_us > 1000u) gravity_perf[(slot)].slow++; \
+	} \
+	else \
+		(result_var) = (call_expr); \
+} while(0)
+
 // Variables memorizing the parent gravity database connection and prepared
 // statements to avoid valgrind warnings about memory leaks
 static sqlite3 *parent_gravity_db = NULL;
@@ -1238,7 +1277,10 @@ enum db_result in_allowlist(const char *domain, DNSCacheData *dns_cache, clients
 	// We have to check both the exact allowlist (using a prepared database statement)
 	// as well the compiled regex allowlist filters to check if the current domain is
 	// allowlisted.
-	return domain_in_list(domain, stmt, "allowlist", &dns_cache->list_id);
+	enum db_result result;
+	GRAVITY_TIMED_LOOKUP(result, domain_in_list(domain, stmt, "allowlist", &dns_cache->list_id),
+	                     GRAVITY_STATS_ALLOWLIST);
+	return result;
 }
 
 cJSON *gen_abp_patterns(const char *domain)
@@ -1396,7 +1438,9 @@ enum db_result in_gravity(const char *domain, cJSON *abp_patterns, clientsData *
 			gravity_stmt->get(gravity_stmt, client->id);
 
 	// Check if domain is exactly in gravity list
-	const enum db_result exact_match = domain_in_list(domain, stmt, listname, domain_id);
+	const unsigned int _slot = antigravity ? GRAVITY_STATS_ANTIGRAVITY : GRAVITY_STATS_GRAVITY;
+	enum db_result exact_match;
+	GRAVITY_TIMED_LOOKUP(exact_match, domain_in_list(domain, stmt, listname, domain_id), _slot);
 	log_debug(DEBUG_QUERIES, "Checking if \"%s\" is in %s (exact): %s",
 	          domain, listname, exact_match == FOUND ? "yes" : "no");
 	// Return for anything else than "not found" (e.g. "found" or "list not available")
@@ -1428,7 +1472,9 @@ enum db_result in_gravity(const char *domain, cJSON *abp_patterns, clientsData *
 		          this_pattern, listname, exact_match == FOUND ? "yes" : "no");
 
 		// Check domain pattern against database
-		const enum db_result abp_match = domain_in_list(this_pattern, stmt, listname, domain_id);
+		const unsigned int _abp_slot = antigravity ? GRAVITY_STATS_ANTIGRAVITY_ABP : GRAVITY_STATS_GRAVITY_ABP;
+		enum db_result abp_match;
+		GRAVITY_TIMED_LOOKUP(abp_match, domain_in_list(this_pattern, stmt, listname, domain_id), _abp_slot);
 		if(abp_match == FOUND || abp_match == LIST_NOT_AVAILABLE)
 			return FOUND;
 	}
@@ -1467,7 +1513,38 @@ enum db_result in_denylist(const char *domain, DNSCacheData *dns_cache, clientsD
 	if(stmt == NULL)
 		stmt = denylist_stmt->get(denylist_stmt, client->id);
 
-	return domain_in_list(domain, stmt, "denylist", &dns_cache->list_id);
+	enum db_result result;
+	GRAVITY_TIMED_LOOKUP(result, domain_in_list(domain, stmt, "denylist", &dns_cache->list_id),
+	                     GRAVITY_STATS_DENYLIST);
+	return result;
+}
+
+// Dump per-operation gravity lookup statistics to the log and
+// reset the counters. Intended to be called every 5 minutes from the DB thread.
+void gravityDB_dump_perf_stats(void)
+{
+	const char * const names[6] = { "gravity (exact)", "antigravity (exact)",
+	                                "gravity (ABP)", "antigravity (ABP)",
+	                                "denylist", "allowlist" };
+	for(unsigned int i = 0; i < 6; i++)
+	{
+		if(gravity_perf[i].calls == 0)
+		{
+			log_debug(DEBUG_PERFORMANCE, "Gravity lookup stats [%s]: no calls in last 5 minutes", names[i]);
+			continue;
+		}
+		log_debug(DEBUG_PERFORMANCE, "Gravity lookup stats [%s]: %"PRIu64" calls, "
+		          "avg %.1f us, max %.1f us, "
+		          "%"PRIu64" slow (>1ms, %.1f%%)",
+		          names[i],
+		          gravity_perf[i].calls,
+		          (double)gravity_perf[i].total_us / (double)gravity_perf[i].calls,
+		          (double)gravity_perf[i].max_us,
+		          gravity_perf[i].slow,
+		          100.0 * (double)gravity_perf[i].slow / (double)gravity_perf[i].calls);
+	}
+	// Reset counters for the next 5-minute window
+	memset(gravity_perf, 0, sizeof(gravity_perf));
 }
 
 bool gravityDB_get_regex_client_groups(clientsData *client, const unsigned int numregex, const regexData *regex,

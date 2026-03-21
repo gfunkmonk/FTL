@@ -58,6 +58,10 @@ enum db_result in_gravity(const char *domain, cJSON *abp_patterns, clientsData *
 enum db_result in_denylist(const char *domain, DNSCacheData *dns_cache, clientsData *client);
 enum db_result in_allowlist(const char *domain, DNSCacheData *dns_cache, clientsData *client);
 
+// Dump per-operation gravity lookup statistics to the log and reset the counters.
+// Intended to be called every 5 minutes from the DB thread.
+void gravityDB_dump_perf_stats(void);
+
 bool gravityDB_get_regex_client_groups(clientsData *client, const unsigned int numregex, const regexData *regex,
                                        const unsigned char type, const char* table);
 
