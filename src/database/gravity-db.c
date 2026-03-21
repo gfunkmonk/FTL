@@ -226,6 +226,30 @@ static bool gravityDB_open(void)
 		return false;
 	}
 
+	// Enable memory-mapped I/O for the gravity database.
+	// gravity.db is effectively read-only at runtime (journal_mode = OFF;
+	// writes only happen during "pihole -g" which then swaps in a new
+	// file). With mmap enabled, SQLite reads B-tree pages directly from the
+	// kernel's page cache via virtual-address loads rather than going
+	// through pread() + a kernel-to-user copy. This eliminates syscall
+	// overhead for every domain lookup. 256 MiB covers all real-world
+	// gravity databases; SQLite falls back silently to regular I/O on
+	// systems where mmap is unavailable.
+	// Memory implications: Without mmap, SQLite reads pages via pread()
+	// which the kernel caches AND SQLite caches separately in its own page
+	// cache. Two copies. With mmap, SQLite reads directly from the kernel
+	// page cache via a virtual address mapping — one copy, shared. Process
+	// RSS (virtual) increases, but physical RAM usage stays the same or
+	// decreases.
+	log_debug(DEBUG_DATABASE, "gravityDB_open(): Enabling memory-mapped I/O (mmap_size = 256 MiB)");
+	rc = sqlite3_exec(gravity_db, "PRAGMA mmap_size = 268435456", NULL, NULL, &zErrMsg);
+	if( rc != SQLITE_OK )
+	{
+		log_warn("gravityDB_open(PRAGMA mmap_size) - SQL error (%i): %s", rc, zErrMsg);
+		sqlite3_free(zErrMsg);
+		// Non-fatal: gravity lookups continue with regular I/O
+	}
+
 	// Prepare private vector of statements for this process (might be a TCP fork!)
 	if(allowlist_stmt == NULL)
 		allowlist_stmt = new_sqlite3_stmt_vec(counters->clients);
