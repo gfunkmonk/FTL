@@ -46,8 +46,6 @@
 #include "database/message-table.h"
 // http_init(), webserver_thread()
 #include "webserver/webserver.h"
-// type struct sqlite3_stmt_vec
-#include "vector.h"
 // init_memory_database()
 #include "database/query-table.h"
 // reread_config()
