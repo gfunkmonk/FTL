@@ -17,8 +17,7 @@
 #include "log.h"
 // getstr()
 #include "shmem.h"
-// SQLite3 prepared statement vectors
-#include "vector.h"
+// sqlite3_carray_bind() is in sqlite3.h (included above)
 // log_subnet_warning()
 // logg_inaccessible_adlist
 #include "message-table.h"
@@ -41,13 +40,15 @@
 // Process-private prepared statements are used to support multiple forks (might
 // be TCP workers) to use the database simultaneously without corrupting the
 // gravity database
-sqlite3_stmt_vec *allowlist_stmt = NULL;
-sqlite3_stmt_vec *denylist_stmt = NULL;
-
-// Shared gravity/antigravity statements — one per process, reused across
-// all clients by rebinding the adlist_id array via carray() before each call.
+// Shared prepared statements — one per process, reused across all clients
+// by rebinding the group_id or adlist_id array via carray() before each call.
 static sqlite3_stmt *gravity_shared_stmt = NULL;
 static sqlite3_stmt *antigravity_shared_stmt = NULL;
+static sqlite3_stmt *allowlist_shared_stmt = NULL;
+static sqlite3_stmt *denylist_shared_stmt = NULL;
+static sqlite3_stmt *adlist_ids_stmt = NULL;
+static sqlite3_stmt *regex_deny_groups_stmt = NULL;
+static sqlite3_stmt *regex_allow_groups_stmt = NULL;
 
 // Per-client pre-computed adlist ID sets for gravity/antigravity.
 // Indexed by client ID. Process-local (not in SHM).
@@ -113,10 +114,13 @@ do { \
 // Variables memorizing the parent gravity database connection and prepared
 // statements to avoid valgrind warnings about memory leaks
 static sqlite3 *parent_gravity_db = NULL;
-sqlite3_stmt_vec *parent_allowlist_stmt = NULL;
-sqlite3_stmt_vec *parent_denylist_stmt = NULL;
 static sqlite3_stmt *parent_gravity_shared_stmt = NULL;
 static sqlite3_stmt *parent_antigravity_shared_stmt = NULL;
+static sqlite3_stmt *parent_allowlist_shared_stmt = NULL;
+static sqlite3_stmt *parent_denylist_shared_stmt = NULL;
+static sqlite3_stmt *parent_adlist_ids_stmt = NULL;
+static sqlite3_stmt *parent_regex_deny_groups_stmt = NULL;
+static sqlite3_stmt *parent_regex_allow_groups_stmt = NULL;
 
 // Private prototypes
 static bool gravityDB_open(void);
@@ -161,14 +165,20 @@ void gravityDB_forked(void)
 	gravity_db = NULL;
 
 	// Also pretend we have not yet prepared the list statements
-	parent_allowlist_stmt = allowlist_stmt;
-	allowlist_stmt = NULL;
-	parent_denylist_stmt = denylist_stmt;
-	denylist_stmt = NULL;
 	parent_gravity_shared_stmt = gravity_shared_stmt;
 	gravity_shared_stmt = NULL;
 	parent_antigravity_shared_stmt = antigravity_shared_stmt;
 	antigravity_shared_stmt = NULL;
+	parent_allowlist_shared_stmt = allowlist_shared_stmt;
+	allowlist_shared_stmt = NULL;
+	parent_denylist_shared_stmt = denylist_shared_stmt;
+	denylist_shared_stmt = NULL;
+	parent_adlist_ids_stmt = adlist_ids_stmt;
+	adlist_ids_stmt = NULL;
+	parent_regex_deny_groups_stmt = regex_deny_groups_stmt;
+	regex_deny_groups_stmt = NULL;
+	parent_regex_allow_groups_stmt = regex_allow_groups_stmt;
+	regex_allow_groups_stmt = NULL;
 
 	// Adlist ID arrays are process-local and not inherited by forks.
 	// The fork will re-compute them when it opens the gravity database.
@@ -335,37 +345,50 @@ static bool gravityDB_open(void)
 		}
 	}
 
-	// Prepare private vector of statements for this process (might be a TCP fork!)
-	if(allowlist_stmt == NULL)
-		allowlist_stmt = new_sqlite3_stmt_vec(counters->clients);
-	if(denylist_stmt == NULL)
-		denylist_stmt = new_sqlite3_stmt_vec(counters->clients);
-
-	// Prepare shared gravity/antigravity statements using carray().
+	// Prepare shared statements using carray() for group/adlist filtering.
 	// One statement per process, reused across all clients by rebinding
-	// the adlist_id array before each call.
-	if(gravity_shared_stmt == NULL)
+	// the carray parameter before each call.
+	struct { sqlite3_stmt **stmt; const char *sql; const char *name; } shared_stmts[] = {
+		{ &gravity_shared_stmt,
+		  "SELECT adlist_id FROM gravity WHERE domain = ?1 AND adlist_id IN carray(?2);",
+		  "gravity" },
+		{ &antigravity_shared_stmt,
+		  "SELECT adlist_id FROM antigravity WHERE domain = ?1 AND adlist_id IN carray(?2);",
+		  "antigravity" },
+		{ &allowlist_shared_stmt,
+		  "SELECT id FROM vw_allowlist WHERE domain = ?1 AND group_id IN carray(?2);",
+		  "allowlist" },
+		{ &denylist_shared_stmt,
+		  "SELECT id FROM vw_denylist WHERE domain = ?1 AND group_id IN carray(?2);",
+		  "denylist" },
+		{ &adlist_ids_stmt,
+		  "SELECT DISTINCT adlist_by_group.adlist_id "
+		  "FROM adlist_by_group "
+		  "JOIN adlist ON adlist.id = adlist_by_group.adlist_id "
+		  "JOIN \"group\" ON \"group\".id = adlist_by_group.group_id "
+		  "WHERE adlist.enabled = 1 AND \"group\".enabled = 1 "
+		  "AND adlist.type = ?1 AND adlist_by_group.group_id IN carray(?2);",
+		  "adlist_ids" },
+		{ &regex_deny_groups_stmt,
+		  "SELECT id FROM vw_regex_denylist WHERE group_id IN carray(?1);",
+		  "regex_deny_groups" },
+		{ &regex_allow_groups_stmt,
+		  "SELECT id FROM vw_regex_allowlist WHERE group_id IN carray(?1);",
+		  "regex_allow_groups" },
+	};
+	for(unsigned int i = 0; i < sizeof(shared_stmts)/sizeof(shared_stmts[0]); i++)
 	{
-		rc = sqlite3_prepare_v3(gravity_db,
-			"SELECT adlist_id FROM gravity WHERE domain = ?1 AND adlist_id IN carray(?2);",
-			-1, SQLITE_PREPARE_PERSISTENT, &gravity_shared_stmt, NULL);
-		if(rc != SQLITE_OK)
+		if(*shared_stmts[i].stmt == NULL)
 		{
-			log_err("gravityDB_open(): Failed to prepare gravity statement: %s", sqlite3_errstr(rc));
-			gravityDB_close();
-			return false;
-		}
-	}
-	if(antigravity_shared_stmt == NULL)
-	{
-		rc = sqlite3_prepare_v3(gravity_db,
-			"SELECT adlist_id FROM antigravity WHERE domain = ?1 AND adlist_id IN carray(?2);",
-			-1, SQLITE_PREPARE_PERSISTENT, &antigravity_shared_stmt, NULL);
-		if(rc != SQLITE_OK)
-		{
-			log_err("gravityDB_open(): Failed to prepare antigravity statement: %s", sqlite3_errstr(rc));
-			gravityDB_close();
-			return false;
+			rc = sqlite3_prepare_v3(gravity_db, shared_stmts[i].sql, -1,
+			                        SQLITE_PREPARE_PERSISTENT, shared_stmts[i].stmt, NULL);
+			if(rc != SQLITE_OK)
+			{
+				log_err("gravityDB_open(): Failed to prepare %s statement: %s",
+				        shared_stmts[i].name, sqlite3_errstr(rc));
+				gravityDB_close();
+				return false;
+			}
 		}
 	}
 
@@ -389,38 +412,22 @@ static bool gravityDB_open(void)
 	return true;
 }
 
-// Format a client's group IDs from SHM int array into a comma-separated
-// string for SQL interpolation and debug logging. Returns a static
-// thread-local buffer — valid until the next call from the same thread.
-static const char *get_group_str(const clientsData *client)
+// Format a client's group IDs for debug logging only.
+// Returns a static thread-local buffer.
+static const char *fmt_group_ids(const clientsData *client)
 {
-	static _Thread_local char buf[512];
+	static _Thread_local char buf[256];
 	int count = 0;
 	const int32_t *ids = getintarray(client->groupspos, &count);
 	if(ids == NULL || count == 0)
-	{
-		buf[0] = '\0';
-		return buf;
-	}
+		return "(none)";
 
 	size_t pos = 0;
-	int used = 0;
-	for(int i = 0; i < count; i++)
+	for(int i = 0; i < count && pos < sizeof(buf) - 13; i++)
 	{
-		// Check if there's enough space for comma + worst-case int
-		// ("-2147483648" = 11 chars) + NUL
-		const size_t needed = (i > 0 ? 1 : 0) + 11 + 1;
-		if(pos + needed > sizeof(buf))
-		{
-			// Truncate at the last complete group ID
-			log_err("get_group_str(): Buffer too small for %d group IDs, "
-			        "using first %d groups", count, used);
-			break;
-		}
 		if(i > 0)
 			buf[pos++] = ',';
 		pos += (size_t)snprintf(buf + pos, sizeof(buf) - pos, "%d", (int)ids[i]);
-		used++;
 	}
 	buf[pos] = '\0';
 	return buf;
@@ -435,69 +442,46 @@ bool gravityDB_reopen(void)
 	return gravityDB_open();
 }
 
-static bool build_client_querystr(char *querystr, const size_t querystrsz, const char *table, const char *column, const char *groups)
-{
-	// Build query string with group filtering
-	if(snprintf(querystr, querystrsz, "SELECT %s from %s WHERE domain = ? AND group_id IN (%s);", column, table, groups) < 1)
-	{
-		log_err("build_client_querystr(%s, %s) - snprintf() error: failed to build query string", table, groups);
-		return false;
-	}
-
-	log_debug(DEBUG_DATABASE, "build_client_querystr: %s", querystr);
-
-	return true;
-}
-
 // Pre-compute the set of eligible adlist IDs for a client's groups.
 // adlist_type: 0 = gravity (blocking), 1 = antigravity (allowing)
-static bool get_client_adlist_ids(const int adlist_type, const char *groups,
+// Uses the shared adlist_ids_stmt with carray binding.
+static bool get_client_adlist_ids(const int adlist_type,
+                                  const int32_t *group_ids, int group_count,
                                   adlist_id_set *out)
 {
 	out->ids = NULL;
 	out->count = 0;
 
-	const char *pfx =
-		"SELECT DISTINCT adlist_by_group.adlist_id "
-		"FROM adlist_by_group "
-		"JOIN adlist ON adlist.id = adlist_by_group.adlist_id "
-		"JOIN \"group\" ON \"group\".id = adlist_by_group.group_id "
-		"WHERE adlist.enabled = 1 AND \"group\".enabled = 1 "
-		"AND adlist.type = ";
-	const size_t qsz = strlen(pfx) + 48 + strlen(groups);
-	char *qstr = calloc(qsz, sizeof(char));
-	if(qstr == NULL)
+	if(adlist_ids_stmt == NULL)
 		return false;
-	snprintf(qstr, qsz, "%s%d AND adlist_by_group.group_id IN (%s);",
-	         pfx, adlist_type, groups);
 
-	sqlite3_stmt *st = NULL;
-	int rc = sqlite3_prepare_v2(gravity_db, qstr, -1, &st, NULL);
-	free(qstr);
-	if(rc != SQLITE_OK)
-		return false;
+	// Bind parameters: ?1 = adlist type, ?2 = group_id array
+	sqlite3_bind_int(adlist_ids_stmt, 1, adlist_type);
+	if(group_count > 0 && group_ids != NULL)
+		sqlite3_carray_bind(adlist_ids_stmt, 2, (void*)group_ids, group_count,
+		                    SQLITE_CARRAY_INT32, SQLITE_STATIC);
 
 	int cap = 4;
 	int32_t *ids = calloc((size_t)cap, sizeof(int32_t));
 	if(ids == NULL)
 	{
-		sqlite3_finalize(st);
+		sqlite3_reset(adlist_ids_stmt);
 		return false;
 	}
 
-	int count = 0;
-	while((rc = sqlite3_step(st)) == SQLITE_ROW)
+	int rc, count = 0;
+	while((rc = sqlite3_step(adlist_ids_stmt)) == SQLITE_ROW)
 	{
 		if(count >= cap)
 		{
 			cap *= 2;
 			int32_t *tmp = realloc(ids, (size_t)cap * sizeof(int32_t));
-			if(tmp == NULL) { free(ids); sqlite3_finalize(st); return false; }
+			if(tmp == NULL) { free(ids); sqlite3_reset(adlist_ids_stmt); return false; }
 			ids = tmp;
 		}
-		ids[count++] = sqlite3_column_int(st, 0);
+		ids[count++] = sqlite3_column_int(adlist_ids_stmt, 0);
 	}
-	sqlite3_finalize(st);
+	sqlite3_reset(adlist_ids_stmt);
 
 	out->ids = ids;
 	out->count = count;
@@ -1000,12 +984,12 @@ static bool get_client_groupids(clientsData *client)
 		if(got_iface)
 		{
 			log_debug(DEBUG_CLIENTS, "Gravity database: Client %s found (identified by interface %s). Using groups (%s)",
-			          show_client_string(hwaddr, hostname, ip), interface, get_group_str(client));
+			          show_client_string(hwaddr, hostname, ip), interface, fmt_group_ids(client));
 		}
 		else
 		{
 			log_debug(DEBUG_CLIENTS, "Gravity database: Client %s found. Using groups (%s)",
-			          show_client_string(hwaddr, hostname, ip), get_group_str(client));
+			          show_client_string(hwaddr, hostname, ip), fmt_group_ids(client));
 		}
 	}
 
@@ -1081,52 +1065,16 @@ bool gravityDB_prepare_client_statements(clientsData *client)
 	// Get associated groups for this client (if defined)
 	if(!client->flags.found_group && !get_client_groupids(client))
 		return false;
-	const char *client_groups = get_group_str(client);
 
-	// Allocate memory for SQL statement preparation
-	// We need to have space for 60 characters
-	// plus the longest table name (vw_denylist = 17)
-	// plus the dynamic length of the client's group selector
-	const size_t querystrsz = 100 + strlen(client_groups);
-	char *querystr = calloc(querystrsz, sizeof(char));
-	if(querystr == NULL)
-	{
-		log_err("gravityDB_prepare_client_statements() - Fatal memory allocation error");
-		return false;
-	}
-
-	// Prepare allowlist statement
-	// The query uses a plain SELECT rather than SELECT EXISTS():
-	// first-match semantics are achieved by calling sqlite3_step() exactly
-	// once before sqlite3_reset(). SQLite's incremental nested-loop
-	// execution returns the first qualifying row and stops — equivalent to
-	// LIMIT 1 — without ever materialising the full result set. The
-	// returned id is used to record which list entry triggered the match.
-	log_debug(DEBUG_DATABASE, "gravityDB_open(): Preparing vw_allowlist statement for client %s", clientip);
-	if(!build_client_querystr(querystr, querystrsz, "vw_allowlist", "id", client_groups))
-	{
-		free(querystr);
-		return false;
-	}
-	sqlite3_stmt* stmt = NULL;
-	int rc = sqlite3_prepare_v3(gravity_db, querystr, -1, SQLITE_PREPARE_PERSISTENT, &stmt, NULL);
-	if( rc != SQLITE_OK )
-	{
-		log_err("gravityDB_open(\"SELECT(... vw_allowlist ...)\") - SQL error prepare: %s", sqlite3_errstr(rc));
-		allowlist_stmt->set(allowlist_stmt, client->id, NULL);
-		gravityDB_close();
-		free(querystr);
-		return false;
-	}
-	allowlist_stmt->set(allowlist_stmt, client->id, stmt);
+	// Get the client's group IDs from SHM for carray binding
+	int group_count = 0;
+	const int32_t *group_ids = getintarray(client->groupspos, &group_count);
 
 	// Pre-compute eligible adlist IDs for this client's gravity/antigravity
-	// lookups. The shared statement + carray() binding eliminates per-client
-	// statement preparation and bypasses the view's 3 LEFT JOINs.
+	// lookups. Uses the shared adlist_ids_stmt with carray() binding.
 	if(!ensure_adlist_ids_capacity(client->id + 1))
 	{
 		log_err("gravityDB_prepare_client_statements(): Failed to allocate adlist ID storage");
-		free(querystr);
 		return false;
 	}
 
@@ -1144,34 +1092,12 @@ bool gravityDB_prepare_client_statements(clientsData *client)
 		antigravity_adlist_ids[client->id].count = 0;
 	}
 
-	log_debug(DEBUG_DATABASE, "Pre-computing gravity adlist IDs for client %s", clientip);
-	get_client_adlist_ids(0, client_groups, &gravity_adlist_ids[client->id]);
+	log_debug(DEBUG_DATABASE, "Pre-computing adlist IDs for client %s (groups: %s)",
+	          clientip, fmt_group_ids(client));
+	get_client_adlist_ids(0, group_ids, group_count, &gravity_adlist_ids[client->id]);
 	log_debug(DEBUG_DATABASE, "  gravity: %d eligible adlist IDs", gravity_adlist_ids[client->id].count);
-
-	log_debug(DEBUG_DATABASE, "Pre-computing antigravity adlist IDs for client %s", clientip);
-	get_client_adlist_ids(1, client_groups, &antigravity_adlist_ids[client->id]);
+	get_client_adlist_ids(1, group_ids, group_count, &antigravity_adlist_ids[client->id]);
 	log_debug(DEBUG_DATABASE, "  antigravity: %d eligible adlist IDs", antigravity_adlist_ids[client->id].count);
-
-	// Prepare denylist statement
-	log_debug(DEBUG_DATABASE, "gravityDB_open(): Preparing vw_denylist statement for client %s", clientip);
-	if(!build_client_querystr(querystr, querystrsz, "vw_denylist", "id", client_groups))
-	{
-		free(querystr);
-		return false;
-	}
-	rc = sqlite3_prepare_v3(gravity_db, querystr, -1, SQLITE_PREPARE_PERSISTENT, &stmt, NULL);
-	if( rc != SQLITE_OK )
-	{
-		log_err("gravityDB_open(\"SELECT(... vw_denylist ...)\") - SQL error prepare: %s", sqlite3_errstr(rc));
-		denylist_stmt->set(denylist_stmt, client->id, NULL);
-		gravityDB_close();
-		free(querystr);
-		return false;
-	}
-	denylist_stmt->set(denylist_stmt, client->id, stmt);
-
-	// Free allocated memory
-	free(querystr);
 
 	return true;
 }
@@ -1179,21 +1105,9 @@ bool gravityDB_prepare_client_statements(clientsData *client)
 // Finalize non-NULL prepared statements and set them to NULL for a given client
 static inline void gravityDB_finalize_client_statements(clientsData *client)
 {
-	log_debug(DEBUG_DATABASE, "Finalizing gravity statements for %s", getstr(client->ippos));
+	log_debug(DEBUG_DATABASE, "Finalizing gravity data for %s", getstr(client->ippos));
 
-	if(allowlist_stmt != NULL &&
-	   allowlist_stmt->get(allowlist_stmt, client->id) != NULL)
-	{
-		sqlite3_finalize(allowlist_stmt->get(allowlist_stmt, client->id));
-		allowlist_stmt->set(allowlist_stmt, client->id, NULL);
-	}
-	if(denylist_stmt != NULL &&
-	   denylist_stmt->get(denylist_stmt, client->id) != NULL)
-	{
-		sqlite3_finalize(denylist_stmt->get(denylist_stmt, client->id));
-		denylist_stmt->set(denylist_stmt, client->id, NULL);
-	}
-	// Free per-client adlist ID arrays (gravity/antigravity use shared statements)
+	// Free per-client adlist ID arrays (all statements are shared now)
 	if(client->id < adlist_ids_capacity)
 	{
 		free(gravity_adlist_ids[client->id].ids);
@@ -1224,20 +1138,20 @@ void gravityDB_close(void)
 			gravityDB_finalize_client_statements(client);
 	}
 
-	// Free allocated memory for vectors of prepared client statements
-	free_sqlite3_stmt_vec(&allowlist_stmt);
-	free_sqlite3_stmt_vec(&denylist_stmt);
-
-	// Finalize shared gravity/antigravity statements
-	if(gravity_shared_stmt != NULL)
+	// Finalize all shared statements
+	sqlite3_stmt **shared[] = {
+		&gravity_shared_stmt, &antigravity_shared_stmt,
+		&allowlist_shared_stmt, &denylist_shared_stmt,
+		&adlist_ids_stmt,
+		&regex_deny_groups_stmt, &regex_allow_groups_stmt,
+	};
+	for(unsigned int i = 0; i < sizeof(shared)/sizeof(shared[0]); i++)
 	{
-		sqlite3_finalize(gravity_shared_stmt);
-		gravity_shared_stmt = NULL;
-	}
-	if(antigravity_shared_stmt != NULL)
-	{
-		sqlite3_finalize(antigravity_shared_stmt);
-		antigravity_shared_stmt = NULL;
+		if(*shared[i] != NULL)
+		{
+			sqlite3_finalize(*shared[i]);
+			*shared[i] = NULL;
+		}
 	}
 
 	// Free per-client adlist ID arrays (may be NULL in TCP forks)
@@ -1546,33 +1460,32 @@ enum db_result in_allowlist(const char *domain, DNSCacheData *dns_cache, clients
 	if(!gravity_has_exact_allowlist)
 		return NOT_FOUND;
 
-	// If list statement is not ready and cannot be initialized (e.g. no
-	// access to the database), we return false to prevent an FTL crash
-	if(allowlist_stmt == NULL)
+	// Check shared statement availability
+	if(allowlist_shared_stmt == NULL)
 		return LIST_NOT_AVAILABLE;
 
 	// Check if this client needs a rechecking of group membership
 	gravityDB_client_check_again(client);
 
-	// Check again as the client may have been reloaded if this is a TCP
-	// worker
-	if(allowlist_stmt == NULL)
+	if(allowlist_shared_stmt == NULL)
 		return LIST_NOT_AVAILABLE;
 
-	// Get allowlist statement from vector of prepared statements if available
-	sqlite3_stmt *stmt = allowlist_stmt->get(allowlist_stmt, client->id);
-
-	// If client statement is not ready and cannot be initialized (e.g. no access to
-	// the database), we return false (not in allowlist) to prevent an FTL crash
-	if(stmt == NULL && !gravityDB_prepare_client_statements(client))
+	// Ensure client's groups are resolved
+	if(!client->flags.found_group && !gravityDB_prepare_client_statements(client))
 	{
 		log_err("Gravity database not available (allowlist)");
 		return LIST_NOT_AVAILABLE;
 	}
 
-	// Update statement if has just been initialized
-	if(stmt == NULL)
-		stmt = allowlist_stmt->get(allowlist_stmt, client->id);
+	// Bind client's group_id array via carray
+	int group_count = 0;
+	const int32_t *group_ids = getintarray(client->groupspos, &group_count);
+	if(group_ids == NULL || group_count == 0)
+		return NOT_FOUND;
+
+	sqlite3_stmt *stmt = allowlist_shared_stmt;
+	sqlite3_carray_bind(stmt, 2, (void*)group_ids, group_count,
+	                    SQLITE_CARRAY_INT32, SQLITE_STATIC);
 
 	// We have to check both the exact allowlist (using a prepared database statement)
 	// as well the compiled regex allowlist filters to check if the current domain is
@@ -1844,33 +1757,32 @@ enum db_result in_denylist(const char *domain, DNSCacheData *dns_cache, clientsD
 	if(!gravity_has_exact_denylist)
 		return NOT_FOUND;
 
-	// If list statement is not ready and cannot be initialized (e.g. no
-	// access to the database), we return false to prevent an FTL crash
-	if(denylist_stmt == NULL)
+	// Check shared statement availability
+	if(denylist_shared_stmt == NULL)
 		return LIST_NOT_AVAILABLE;
 
 	// Check if this client needs a rechecking of group membership
 	gravityDB_client_check_again(client);
 
-	// Check again as the client may have been reloaded if this is a TCP
-	// worker
-	if(denylist_stmt == NULL)
+	if(denylist_shared_stmt == NULL)
 		return LIST_NOT_AVAILABLE;
 
-	// Get allowlist statement from vector of prepared statements
-	sqlite3_stmt *stmt = denylist_stmt->get(denylist_stmt, client->id);
-
-	// If client statement is not ready and cannot be initialized (e.g. no access to
-	// the database), we return false (not in denylist) to prevent an FTL crash
-	if(stmt == NULL && !gravityDB_prepare_client_statements(client))
+	// Ensure client's groups are resolved
+	if(!client->flags.found_group && !gravityDB_prepare_client_statements(client))
 	{
 		log_err("Gravity database not available (denylist)");
 		return LIST_NOT_AVAILABLE;
 	}
 
-	// Update statement if has just been initialized
-	if(stmt == NULL)
-		stmt = denylist_stmt->get(denylist_stmt, client->id);
+	// Bind client's group_id array via carray
+	int group_count = 0;
+	const int32_t *group_ids = getintarray(client->groupspos, &group_count);
+	if(group_ids == NULL || group_count == 0)
+		return NOT_FOUND;
+
+	sqlite3_stmt *stmt = denylist_shared_stmt;
+	sqlite3_carray_bind(stmt, 2, (void*)group_ids, group_count,
+	                    SQLITE_CARRAY_INT32, SQLITE_STATIC);
 
 	enum db_result result;
 	GRAVITY_TIMED_LOOKUP(result, domain_in_list(domain, stmt, "denylist", &dns_cache->list_id),
@@ -1912,30 +1824,29 @@ bool gravityDB_get_regex_client_groups(clientsData *client, const unsigned int n
 {
 	log_debug(DEBUG_REGEX, "Getting regex client groups for client with ID %u", client->id);
 
-	char *querystr = NULL;
 	if(!client->flags.found_group && !get_client_groupids(client))
 		return false;
 
-	// Group filtering
-	const char *groups = get_group_str(client);
-	if(asprintf(&querystr, "SELECT id from %s WHERE group_id IN (%s);", table, groups) < 1)
+	// Select the appropriate shared statement for this regex type
+	sqlite3_stmt *query_stmt = (type == REGEX_ALLOW) ? regex_allow_groups_stmt
+	                                                 : regex_deny_groups_stmt;
+	if(query_stmt == NULL)
 	{
-		log_err("gravityDB_get_regex_client_groups(%s, %s) - asprintf() error", table, groups);
+		log_err("gravityDB_get_regex_client_groups(%s): Shared statement not available", table);
 		return false;
 	}
 
-	// Prepare query
-	sqlite3_stmt *query_stmt;
-	int rc = sqlite3_prepare_v2(gravity_db, querystr, -1, &query_stmt, NULL);
-	if(rc != SQLITE_OK){
-		log_err("gravityDB_get_regex_client_groups(): %s - SQL error prepare: %s", querystr, sqlite3_errstr(rc));
-		gravityDB_close();
-		free(querystr);
-		return false;
-	}
+	// Bind client's group_id array via carray (parameter ?1)
+	int group_count = 0;
+	const int32_t *group_ids = getintarray(client->groupspos, &group_count);
+	if(group_ids != NULL && group_count > 0)
+		sqlite3_carray_bind(query_stmt, 1, (void*)group_ids, group_count,
+		                    SQLITE_CARRAY_INT32, SQLITE_STATIC);
 
 	// Perform query
-	log_debug(DEBUG_REGEX, "Regex %s: Querying associated regexes for client %s: \"%s\"", regextype[type], getstr(client->ippos), querystr);
+	log_debug(DEBUG_REGEX, "Regex %s: Querying associated regexes for client %s (groups: %s)",
+	          regextype[type], getstr(client->ippos), fmt_group_ids(client));
+	int rc;
 	while((rc = sqlite3_step(query_stmt)) == SQLITE_ROW)
 	{
 		const int result = sqlite3_column_int(query_stmt, 0);
@@ -1956,11 +1867,8 @@ bool gravityDB_get_regex_client_groups(clientsData *client, const unsigned int n
 		}
 	}
 
-	// Finalize statement
-	sqlite3_finalize(query_stmt);
-
-	// Free allocated memory and return result
-	free(querystr);
+	// Reset statement for reuse (shared, not finalized)
+	sqlite3_reset(query_stmt);
 
 	return true;
 }
