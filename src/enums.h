@@ -21,6 +21,7 @@ enum memory_type {
 	CLIENTS_LOOKUP,
 	DOMAINS_LOOKUP,
 	DNS_CACHE_LOOKUP,
+	INTARRAYS,
 } __attribute__ ((packed));
 
 enum dnssec_status {

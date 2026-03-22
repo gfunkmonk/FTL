@@ -55,6 +55,7 @@
 #define SHARED_DOMAINS_LOOKUP_NAME "domains-lookup"
 #define SHARED_DNS_CACHE_LOOKUP_NAME "dns-cache-lookup"
 #define SHARED_RECYCLER_NAME "recycler"
+#define SHARED_INTARRAYS_NAME "intarrays"
 
 // Allocation step for FTL-strings bucket. This is somewhat special as we use
 // this as a general-purpose storage which should always be large enough. If,
@@ -62,6 +63,7 @@
 // close to impossible), the data will be properly truncated and we try again in
 // the next lock round
 #define STRINGS_ALLOC_STEP (10*pagesize)
+#define INTARRAYS_ALLOC_STEP (2*pagesize)
 
 // Global counters struct
 countersStruct *counters = NULL;
@@ -84,6 +86,7 @@ static SharedMemory shm_clients_lookup = { 0 };
 static SharedMemory shm_domains_lookup = { 0 };
 static SharedMemory shm_dns_cache_lookup = { 0 };
 static SharedMemory shm_recycler = { 0 };
+static SharedMemory shm_intarrays = { 0 };
 
 static SharedMemory *sharedMemories[] = { &shm_lock,
                                           &shm_strings,
@@ -100,7 +103,8 @@ static SharedMemory *sharedMemories[] = { &shm_lock,
                                           &shm_clients_lookup,
                                           &shm_domains_lookup,
                                           &shm_dns_cache_lookup,
-                                          &shm_recycler };
+                                          &shm_recycler,
+                                          &shm_intarrays };
 
 // Variable size array structs
 static queriesData *queries = NULL;
@@ -415,6 +419,99 @@ const char *_getstr(const size_t pos, const char *func, const int line, const ch
 	}
 }
 
+// Add an integer array to shared memory.
+// Storage format: [count:int32][id0:int32][id1:int32]...
+// Returns the position (in int32 units) of the stored array.
+// Position 0 is reserved for "empty array" (valid).
+// Returns SIZE_MAX on error (out of space).
+size_t _addintarray(const int32_t *ids, int count, const char *func, const int line, const char *file)
+{
+	// Empty arrays use position 0 (the pre-initialized empty sentinel)
+	if(ids == NULL || count <= 0)
+		return 0;
+
+	const int32_t *pool = (const int32_t*)shm_intarrays.ptr;
+	const size_t slots_needed = (size_t)(1 + count);
+
+	// Dedup: walk existing entries and return position of an identical
+	// array if one exists. The number of unique arrays is small (one per
+	// distinct group combination across all clients), so a linear scan
+	// is fast and avoids the complexity of a hash table.
+	size_t scan = 1; // skip position 0 (empty sentinel)
+	while(scan < shmSettings->next_intarray_pos)
+	{
+		const int existing_count = (int)pool[scan];
+		if(existing_count == count &&
+		   memcmp(&pool[scan + 1], ids, (size_t)count * sizeof(int32_t)) == 0)
+		{
+			log_debug(DEBUG_SHMEM, "Reusing existing int array at pos %zu in %s() (%s:%i)",
+			          scan, func, short_path(file), line);
+			return scan;
+		}
+		// Advance past this entry: 1 (count) + existing_count (data)
+		scan += (size_t)(1 + existing_count);
+	}
+
+	// No duplicate found — append new entry
+	const size_t bytes_needed = slots_needed * sizeof(int32_t);
+	const size_t avail_bytes = shm_intarrays.size - shmSettings->next_intarray_pos * sizeof(int32_t);
+
+	if(bytes_needed > avail_bytes)
+	{
+		log_warn("addintarray: Not enough space (%zu bytes needed, %zu available) in %s() (%s:%i)",
+		         bytes_needed, avail_bytes, func, short_path(file), line);
+		return SIZE_MAX;
+	}
+
+	int32_t *wpool = (int32_t*)shm_intarrays.ptr;
+	const size_t pos = shmSettings->next_intarray_pos;
+
+	// Write count followed by data
+	wpool[pos] = (int32_t)count;
+	memcpy(&wpool[pos + 1], ids, (size_t)count * sizeof(int32_t));
+
+	// Advance write head
+	shmSettings->next_intarray_pos += slots_needed;
+
+	log_debug(DEBUG_SHMEM, "Added int array (%d elements) at pos %zu in %s() (%s:%i)",
+	          count, pos, func, short_path(file), line);
+
+	return pos;
+}
+
+// Get an integer array from shared memory.
+// Returns a pointer to the data portion (after the count field).
+// Sets *count to the number of elements. Returns NULL for position 0
+// (empty array) or on error.
+const int32_t *_getintarray(const size_t pos, int *count, const char *func, const int line, const char *file)
+{
+	// Position 0 is the empty-array sentinel
+	if(pos == 0)
+	{
+		if(count != NULL)
+			*count = 0;
+		return NULL;
+	}
+
+	if(pos >= shmSettings->next_intarray_pos)
+	{
+		log_warn("Tried to access intarray at %zu in %s() (%s:%i) but next_intarray_pos is %zu",
+		         pos, func, file, line, shmSettings->next_intarray_pos);
+		if(count != NULL)
+			*count = 0;
+		return NULL;
+	}
+
+	const int32_t *pool = (const int32_t*)shm_intarrays.ptr;
+	const int n = (int)pool[pos];
+
+	if(count != NULL)
+		*count = n;
+
+	// Return pointer to data portion (element after count)
+	return n > 0 ? &pool[pos + 1] : NULL;
+}
+
 // Create a mutex for shared memory
 static void create_mutex(pthread_mutex_t *lock) {
 	log_debug(DEBUG_SHMEM, "Creating SHM mutex lock");
@@ -476,6 +573,9 @@ static void remap_shm(void)
 
 	realloc_shm(&shm_strings, counters->strings_MAX, sizeof(char), false);
 	// strings are not exposed by a global pointer
+
+	realloc_shm(&shm_intarrays, counters->intarrays_MAX, sizeof(int32_t), false);
+	// int arrays are not exposed by a global pointer
 
 	realloc_shm(&shm_domains_lookup, counters->domains_lookup_MAX, sizeof(struct lookup_table), false);
 	domains_lookup = (struct lookup_table*)shm_domains_lookup.ptr;
@@ -646,6 +746,18 @@ bool init_shmem()
 	// Initialize shared string object with an empty string at position zero
 	((char*)shm_strings.ptr)[0] = '\0';
 	shmSettings->next_str_pos = 1;
+
+	/****************************** shared int arrays buffer ******************************/
+	// Try to create shared memory object
+	create_shm(SHARED_INTARRAYS_NAME, &shm_intarrays, INTARRAYS_ALLOC_STEP);
+	if(shm_intarrays.ptr == NULL)
+		return false;
+
+	counters->intarrays_MAX = shm_intarrays.size / sizeof(int32_t);
+
+	// Initialize with an empty array at position zero (count = 0)
+	((int32_t*)shm_intarrays.ptr)[0] = 0;
+	shmSettings->next_intarray_pos = 1;
 
 	/****************************** shared domains struct ******************************/
 	size_t size = get_optimal_object_size(sizeof(domainsData), 1);
@@ -931,6 +1043,12 @@ static void *enlarge_shmem_struct(const char type, const size_t alloc_step)
 			sizeofobj = sizeof(char);
 			size = &counters->strings_MAX;
 			break;
+		case INTARRAYS:
+			sharedMemory = &shm_intarrays;
+			allocation_step = INTARRAYS_ALLOC_STEP;
+			sizeofobj = sizeof(int32_t);
+			size = &counters->intarrays_MAX;
+			break;
 		case CLIENTS_LOOKUP:
 			sharedMemory = &shm_clients_lookup;
 			allocation_step = get_optimal_object_size(sizeof(struct lookup_table), alloc_step);
@@ -1214,6 +1332,15 @@ static void shm_ensure_size(void)
 	{
 		// Have to reallocate shared memory
 		if(enlarge_shmem_struct(STRINGS, 1) == NULL)
+		{
+			log_crit("Memory allocation failed! Exiting");
+			exit(EXIT_FAILURE);
+		}
+	}
+	if(shmSettings->next_intarray_pos * sizeof(int32_t) + INTARRAYS_ALLOC_STEP >= shm_intarrays.size)
+	{
+		// Have to reallocate shared memory
+		if(enlarge_shmem_struct(INTARRAYS, 1) == NULL)
 		{
 			log_crit("Memory allocation failed! Exiting");
 			exit(EXIT_FAILURE);

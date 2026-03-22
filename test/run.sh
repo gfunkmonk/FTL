@@ -103,6 +103,14 @@ sleep 2
 # In case a non-ignored signal occurs (a crash), create a full backtrace
 gdb -p $(cat /run/pihole-FTL.pid) --ex continue --ex "bt full" &
 
+# Pre-warm DNSSEC root key cache. dnsmasq's DNSSEC validation can
+# trigger internal DNSKEY queries for the root zone at unpredictable
+# times. By explicitly querying DNSKEY for "." first, we force the
+# root key into cache so all subsequent DNSSEC validation uses the
+# cached key. This makes the total query count deterministic.
+dig DNSKEY . @127.0.0.1 +dnssec > /dev/null 2>&1
+sleep 1
+
 # Print versions of pihole-FTL
 echo -n "FTL version (DNS): "
 dig TXT CHAOS version.FTL @127.0.0.1 +short

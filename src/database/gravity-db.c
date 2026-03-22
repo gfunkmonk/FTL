@@ -389,6 +389,43 @@ static bool gravityDB_open(void)
 	return true;
 }
 
+// Format a client's group IDs from SHM int array into a comma-separated
+// string for SQL interpolation and debug logging. Returns a static
+// thread-local buffer — valid until the next call from the same thread.
+static const char *get_group_str(const clientsData *client)
+{
+	static _Thread_local char buf[512];
+	int count = 0;
+	const int32_t *ids = getintarray(client->groupspos, &count);
+	if(ids == NULL || count == 0)
+	{
+		buf[0] = '\0';
+		return buf;
+	}
+
+	size_t pos = 0;
+	int used = 0;
+	for(int i = 0; i < count; i++)
+	{
+		// Check if there's enough space for comma + worst-case int
+		// ("-2147483648" = 11 chars) + NUL
+		const size_t needed = (i > 0 ? 1 : 0) + 11 + 1;
+		if(pos + needed > sizeof(buf))
+		{
+			// Truncate at the last complete group ID
+			log_err("get_group_str(): Buffer too small for %d group IDs, "
+			        "using first %d groups", count, used);
+			break;
+		}
+		if(i > 0)
+			buf[pos++] = ',';
+		pos += (size_t)snprintf(buf + pos, sizeof(buf) - pos, "%d", (int)ids[i]);
+		used++;
+	}
+	buf[pos] = '\0';
+	return buf;
+}
+
 bool gravityDB_reopen(void)
 {
 	// We call this routine when reloading the cache.
@@ -475,15 +512,19 @@ static bool ensure_adlist_ids_capacity(const unsigned int needed)
 
 	const unsigned int new_cap = needed + 16;
 	adlist_id_set *g = realloc(gravity_adlist_ids, new_cap * sizeof(adlist_id_set));
-	adlist_id_set *a = realloc(antigravity_adlist_ids, new_cap * sizeof(adlist_id_set));
-	if(g == NULL || a == NULL)
+	if(g == NULL)
 		return false;
+	gravity_adlist_ids = g;
+	adlist_id_set *a = realloc(antigravity_adlist_ids, new_cap * sizeof(adlist_id_set));
+	if(a == NULL)
+		return false;
+	antigravity_adlist_ids = a;
 
 	// Zero-initialize new slots
-	memset(g + adlist_ids_capacity, 0, (new_cap - adlist_ids_capacity) * sizeof(adlist_id_set));
-	memset(a + adlist_ids_capacity, 0, (new_cap - adlist_ids_capacity) * sizeof(adlist_id_set));
-	gravity_adlist_ids = g;
-	antigravity_adlist_ids = a;
+	memset(gravity_adlist_ids + adlist_ids_capacity, 0,
+	       (new_cap - adlist_ids_capacity) * sizeof(adlist_id_set));
+	memset(antigravity_adlist_ids + adlist_ids_capacity, 0,
+	       (new_cap - adlist_ids_capacity) * sizeof(adlist_id_set));
 	adlist_ids_capacity = new_cap;
 	return true;
 }
@@ -870,19 +911,20 @@ static bool get_client_groupids(clientsData *client)
 		log_debug(DEBUG_CLIENTS, "Gravity database: Client %s not found. Using default group.",
 		          show_client_string(hwaddr, hostname, ip));
 
-		client->groupspos = addstr("0");
+		const int32_t default_group = 0;
+		client->groupspos = addintarray(&default_group, 1);
+		if(client->groupspos == SIZE_MAX)
+		{
+			client->groupspos = 0;
+			return false;
+		}
 		client->flags.found_group = true;
 
 		return true;
 	}
 
-	// Build query string to get possible group associations for this particular client
-	// The SQL GROUP_CONCAT() function returns a string which is the concatenation of all
-	// non-NULL values of group_id separated by ','. The order of the concatenated elements
-	// is arbitrary, however, is of no relevance for your use case.
-	// We check using a possibly defined subnet and use the first result
-	querystr = "SELECT GROUP_CONCAT(group_id) FROM client_by_group "
-	           "WHERE client_id = ?;";
+	// Query individual group IDs for this client and store as int array
+	querystr = "SELECT group_id FROM client_by_group WHERE client_id = ?;";
 
 	log_debug(DEBUG_CLIENTS, "Querying gravity database for client %s (getting groups)", ip);
 
@@ -896,7 +938,7 @@ static bool get_client_groupids(clientsData *client)
 		return false;
 	}
 
-	// Bind hwaddr to prepared statement
+	// Bind client_id to prepared statement
 	if((rc = sqlite3_bind_int(table_stmt, 1, chosen_match_id)) != SQLITE_OK)
 	{
 		log_err("get_client_groupids(\"%s\", \"%s\", %d): Failed to bind chosen_match_id: %s",
@@ -905,32 +947,50 @@ static bool get_client_groupids(clientsData *client)
 		return false;
 	}
 
-	// Perform query
-	rc = sqlite3_step(table_stmt);
-	if(rc == SQLITE_ROW)
+	// Collect group IDs into a temporary array
+	int cap = 4;
+	int count = 0;
+	int32_t *group_ids = calloc((size_t)cap, sizeof(int32_t));
+	if(group_ids == NULL)
 	{
-		// There is a record for this client in the database
-		const char* result = (const char*)sqlite3_column_text(table_stmt, 0);
-		if(result != NULL)
-		{
-			client->groupspos = addstr(result);
-			client->flags.found_group = true;
-		}
+		gravityDB_finalizeTable();
+		return false;
 	}
-	else if(rc == SQLITE_DONE)
+
+	while((rc = sqlite3_step(table_stmt)) == SQLITE_ROW)
 	{
-		// Found no record for this client in the database
-		// -> No associated groups
-		client->groupspos = addstr("");
+		if(count >= cap)
+		{
+			cap *= 2;
+			int32_t *tmp = realloc(group_ids, (size_t)cap * sizeof(int32_t));
+			if(tmp == NULL) { free(group_ids); gravityDB_finalizeTable(); return false; }
+			group_ids = tmp;
+		}
+		group_ids[count++] = sqlite3_column_int(table_stmt, 0);
+	}
+
+	if(rc == SQLITE_DONE)
+	{
+		// Store the group IDs in shared memory as an int array
+		client->groupspos = addintarray(group_ids, count);
+		if(client->groupspos == SIZE_MAX)
+		{
+			client->groupspos = 0;
+			free(group_ids);
+			gravityDB_finalizeTable();
+			return false;
+		}
 		client->flags.found_group = true;
 	}
 	else
 	{
 		log_err("get_client_groupids(\"%s\", \"%s\", %d) - SQL error step: %s",
 		        ip, hwaddr, chosen_match_id, sqlite3_errstr(rc));
+		free(group_ids);
 		gravityDB_finalizeTable();
 		return false;
 	}
+	free(group_ids);
 	// Finalize statement
 	gravityDB_finalizeTable();
 
@@ -940,12 +1000,12 @@ static bool get_client_groupids(clientsData *client)
 		if(got_iface)
 		{
 			log_debug(DEBUG_CLIENTS, "Gravity database: Client %s found (identified by interface %s). Using groups (%s)",
-			          show_client_string(hwaddr, hostname, ip), interface, getstr(client->groupspos));
+			          show_client_string(hwaddr, hostname, ip), interface, get_group_str(client));
 		}
 		else
 		{
 			log_debug(DEBUG_CLIENTS, "Gravity database: Client %s found. Using groups (%s)",
-			          show_client_string(hwaddr, hostname, ip), getstr(client->groupspos));
+			          show_client_string(hwaddr, hostname, ip), get_group_str(client));
 		}
 	}
 
@@ -1021,7 +1081,7 @@ bool gravityDB_prepare_client_statements(clientsData *client)
 	// Get associated groups for this client (if defined)
 	if(!client->flags.found_group && !get_client_groupids(client))
 		return false;
-	const char *client_groups = getstr(client->groupspos);
+	const char *client_groups = get_group_str(client);
 
 	// Allocate memory for SQL statement preparation
 	// We need to have space for 60 characters
@@ -1071,12 +1131,18 @@ bool gravityDB_prepare_client_statements(clientsData *client)
 	}
 
 	// Free any previous arrays for this client (e.g., on group reload)
-	free(gravity_adlist_ids[client->id].ids);
-	gravity_adlist_ids[client->id].ids = NULL;
-	gravity_adlist_ids[client->id].count = 0;
-	free(antigravity_adlist_ids[client->id].ids);
-	antigravity_adlist_ids[client->id].ids = NULL;
-	antigravity_adlist_ids[client->id].count = 0;
+	if(gravity_adlist_ids[client->id].ids != NULL)
+	{
+		free(gravity_adlist_ids[client->id].ids);
+		gravity_adlist_ids[client->id].ids = NULL;
+		gravity_adlist_ids[client->id].count = 0;
+	}
+	if(antigravity_adlist_ids[client->id].ids != NULL)
+	{
+		free(antigravity_adlist_ids[client->id].ids);
+		antigravity_adlist_ids[client->id].ids = NULL;
+		antigravity_adlist_ids[client->id].count = 0;
+	}
 
 	log_debug(DEBUG_DATABASE, "Pre-computing gravity adlist IDs for client %s", clientip);
 	get_client_adlist_ids(0, client_groups, &gravity_adlist_ids[client->id]);
@@ -1174,16 +1240,24 @@ void gravityDB_close(void)
 		antigravity_shared_stmt = NULL;
 	}
 
-	// Free per-client adlist ID arrays
+	// Free per-client adlist ID arrays (may be NULL in TCP forks)
 	for(unsigned int i = 0; i < adlist_ids_capacity; i++)
 	{
-		free(gravity_adlist_ids[i].ids);
-		free(antigravity_adlist_ids[i].ids);
+		if(gravity_adlist_ids != NULL && gravity_adlist_ids[i].ids != NULL)
+			free(gravity_adlist_ids[i].ids);
+		if(antigravity_adlist_ids != NULL && antigravity_adlist_ids[i].ids != NULL)
+			free(antigravity_adlist_ids[i].ids);
 	}
-	free(gravity_adlist_ids);
-	free(antigravity_adlist_ids);
-	gravity_adlist_ids = NULL;
-	antigravity_adlist_ids = NULL;
+	if(gravity_adlist_ids != NULL)
+	{
+		free(gravity_adlist_ids);
+		gravity_adlist_ids = NULL;
+	}
+	if(antigravity_adlist_ids != NULL)
+	{
+		free(antigravity_adlist_ids);
+		antigravity_adlist_ids = NULL;
+	}
 	adlist_ids_capacity = 0;
 
 	// Close table
@@ -1843,7 +1917,7 @@ bool gravityDB_get_regex_client_groups(clientsData *client, const unsigned int n
 		return false;
 
 	// Group filtering
-	const char *groups = getstr(client->groupspos);
+	const char *groups = get_group_str(client);
 	if(asprintf(&querystr, "SELECT id from %s WHERE group_id IN (%s);", table, groups) < 1)
 	{
 		log_err("gravityDB_get_regex_client_groups(%s, %s) - asprintf() error", table, groups);
