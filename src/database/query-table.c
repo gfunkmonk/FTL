@@ -1278,6 +1278,43 @@ bool add_query_storage_column_ede(sqlite3 *db)
 	return true;
 }
 
+bool replace_queries_view_with_joins(sqlite3 *db)
+{
+	// Start transaction of database update
+	SQL_bool(db, "BEGIN");
+
+	// Replace the queries VIEW definition: use LEFT JOINs instead of
+	// correlated subqueries. The old VIEW executed 4 SELECT subqueries per
+	// row; the new one uses JOINs which are evaluated once for the entire
+	// result set. This is dramatically faster for users querying the
+	// database via the sqlite3 CLI or third-party tools.
+	SQL_bool(db, "DROP VIEW IF EXISTS queries");
+	SQL_bool(db, "CREATE VIEW queries AS "
+	             "SELECT q.id, q.timestamp, q.type, q.status, "
+	               "COALESCE(d.domain, q.domain) AS domain, "
+	               "COALESCE(c.ip, q.client) AS client, "
+	               "COALESCE(f.forward, q.forward) AS forward, "
+	               "COALESCE(a.content, q.additional_info) AS additional_info, "
+	               "q.reply_type, q.reply_time, q.dnssec, q.list_id, q.ede "
+	             "FROM query_storage q "
+	             "LEFT JOIN domain_by_id d ON q.domain = d.id "
+	             "LEFT JOIN client_by_id c ON q.client = c.id "
+	             "LEFT JOIN forward_by_id f ON q.forward = f.id "
+	             "LEFT JOIN addinfo_by_id a ON q.additional_info = a.id");
+
+	// Update database version to 22
+	if(!db_set_FTL_property(db, DB_VERSION, 22))
+	{
+		log_err("replace_queries_view_with_joins(): Failed to update database version!");
+		return false;
+	}
+
+	// Finish transaction
+	SQL_bool(db, "END");
+
+	return true;
+}
+
 bool optimize_queries_table(sqlite3 *db)
 {
 	// Start transaction of database update

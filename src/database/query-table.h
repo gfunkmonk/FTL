@@ -23,7 +23,7 @@
                                                        "client TEXT NOT NULL, " \
                                                        "forward TEXT );"
 
-#define MEMDB_VERSION 21
+#define MEMDB_VERSION 22
 #define CREATE_QUERY_STORAGE_TABLE "CREATE TABLE query_storage ( id INTEGER PRIMARY KEY AUTOINCREMENT, " \
                                                                 "timestamp INTEGER NOT NULL, " \
                                                                 "type INTEGER NOT NULL, " \
@@ -129,5 +129,6 @@ bool add_query_storage_column_regex_id(sqlite3 *db);
 bool add_ftl_table_description(sqlite3 *db);
 bool rename_query_storage_column_regex_id(sqlite3 *db);
 bool add_query_storage_column_ede(sqlite3 *db);
+bool replace_queries_view_with_joins(sqlite3 *db);
 
 #endif //QUERY_TABLE_PRIVATE_H

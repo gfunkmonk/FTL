@@ -720,6 +720,22 @@ void db_init(void)
 		dbversion = db_get_int(db, DB_VERSION);
 	}
 
+	// Update to version 22 if lower
+	if(dbversion < 22)
+	{
+		// Update to version 22: Replace queries VIEW with JOIN-based definition
+		log_info("Updating long-term database to version 22");
+		if(!replace_queries_view_with_joins(db))
+		{
+			log_info("Queries VIEW cannot be replaced, database not available");
+			dbclose(&db);
+			DBerror = true;
+			return;
+		}
+		// Get updated version
+		dbversion = db_get_int(db, DB_VERSION);
+	}
+
 	/* * * * * * * * * * * * * IMPORTANT * * * * * * * * * * * * *
 	 * If you add a new database version, check if the in-memory
 	 * schema needs to be update as well (always recreated from
