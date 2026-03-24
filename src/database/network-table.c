@@ -1308,6 +1308,11 @@ void parse_neighbor_cache(sqlite3 *db)
 	const int clients = counters->clients;
 	unlock_shm();
 	enum arp_status *client_status = calloc(clients, sizeof(enum arp_status));
+	if(client_status == NULL)
+	{
+		log_err("parse_neighbor_cache(): Failed to allocate client_status array (%d entries)", clients);
+		return;
+	}
 	for(int i = 0; i < clients; i++)
 		client_status[i] = CLIENT_NOT_HANDLED;
 

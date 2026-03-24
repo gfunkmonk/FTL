@@ -2308,6 +2308,11 @@ bool gravityDB_readTable(const enum gravity_list_type listtype,
 	// Build query statement
 	const size_t buflen = 512u + (ids != NULL ? strlen(ids) : 0u);
 	char *querystr = calloc(buflen, sizeof(char));
+	if(querystr == NULL)
+	{
+		*message = "Failed to allocate memory for query string";
+		return false;
+	}
 	char *like_name = (char*)item;
 	if(!exact && item != NULL && item[0] != '\0')
 	{
