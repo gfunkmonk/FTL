@@ -1096,8 +1096,11 @@ bool _FTL_new_query(const unsigned int flags, const char *name,
 			client->hwlen = hwlen;
 		}
 
-		// Re-fetch query pointer as SHM may have been remapped
+		// Re-fetch all SHM pointers as SHM may have been remapped
 		query = getQuery(queryID, true);
+		domain = getDomain(domainID, true);
+		dns_cache_entry = query != NULL && query->cacheID > -1
+		                ? getDNSCache(query->cacheID, true) : NULL;
 
 		if(config.debug.arp.v.b)
 		{

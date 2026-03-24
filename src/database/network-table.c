@@ -1767,8 +1767,6 @@ static bool getMACVendor(const char *hwaddr, char vendor[MAXVENDORLEN])
 
 	log_debug(DEBUG_ARP, "getMACVendor(\"%s\")", hwaddr);
 
-	log_debug(DEBUG_ARP, "getMACVendor(\"%s\")", hwaddr);
-
 	struct stat st;
 	if(stat(config.files.macvendor.v.s, &st) != 0)
 	{
