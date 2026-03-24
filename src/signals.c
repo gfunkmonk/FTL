@@ -150,19 +150,21 @@ static void find_mapping_name(const void *addr, char *buf, const size_t buflen)
 	fclose(maps);
 }
 
-// Log one backtrace frame as a single line.
-// Resolved:   "  #N  func_name                    src/file.c:line"
-// Unresolved: "  #N  0xADDRESS  (reason)"
+// Log one backtrace frame in GDB-style format:
+//   Resolved own code:  "#N  0xADDR in func_name () at src/file.c:line"
+//   Resolved library:   "#N  0xADDR in func_name () from libname.so"
+//   Unresolved library:  "#N  0xADDR in ?? () from libname.so"
+//   Fully unresolved:   "#N  0xADDR in ?? ()"
 static void log_frame(const int idx, const void *addr, const void *rel_addr)
 {
 	if(!config.misc.addr2line.v.b)
 	{
-		log_info("  #%-2i  %p  (addr2line disabled via config)", idx, addr);
+		log_info("  #%-2d  %p in ?? () [addr2line disabled]", idx, addr);
 		return;
 	}
 	if(bin_path[0] == '\0')
 	{
-		log_info("  #%-2i  %p  (binary path unknown)", idx, addr);
+		log_info("  #%-2d  %p in ?? () [binary path unknown]", idx, addr);
 		return;
 	}
 
@@ -172,7 +174,7 @@ static void log_frame(const int idx, const void *addr, const void *rel_addr)
 	FILE *fp = popen(cmd, "r");
 	if(fp == NULL)
 	{
-		log_info("  #%-2i  %p  (addr2line not available)", idx, addr);
+		log_info("  #%-2d  %p in ?? () [addr2line not available]", idx, addr);
 		return;
 	}
 
@@ -200,9 +202,9 @@ static void log_frame(const int idx, const void *addr, const void *rel_addr)
 			// Library basename (e.g. "libc.so.6")
 			const char *lib = dl.dli_fname ? strrchr(dl.dli_fname, '/') : NULL;
 			const char *libname = lib ? lib + 1 : (dl.dli_fname ? dl.dli_fname : "?");
-			// Byte offset from the nearest preceding symbol
 			const uintptr_t offset = (uintptr_t)addr - (uintptr_t)dl.dli_saddr;
-			log_info("  #%-2i  %p  (%s  %s+0x%zx)", idx, addr, libname, dl.dli_sname, (size_t)offset);
+			log_info("  #%-2d  %p in %s (+0x%zx) from %s",
+			         idx, addr, dl.dli_sname, (size_t)offset, libname);
 		}
 		else
 		{
@@ -211,9 +213,9 @@ static void log_frame(const int idx, const void *addr, const void *rel_addr)
 			char mapping[128] = { 0 };
 			find_mapping_name(addr, mapping, sizeof(mapping));
 			if(mapping[0] != '\0')
-				log_info("  #%-2i  %p  (%s, no debug info)", idx, addr, mapping);
+				log_info("  #%-2d  %p in ?? () from %s", idx, addr, mapping);
 			else
-				log_info("  #%-2i  %p  (no debug info)", idx, addr);
+				log_info("  #%-2d  %p in ?? ()", idx, addr);
 		}
 		return;
 	}
@@ -226,7 +228,7 @@ static void log_frame(const int idx, const void *addr, const void *rel_addr)
 		display_loc = loc + sizeof(SOURCE_ROOT) - 1u;
 #endif
 
-	log_info("  #%-2i  %-30s  %s", idx, func, display_loc);
+	log_info("  #%-2d  %p in %s () at %s", idx, addr, func, display_loc);
 }
 #endif // USE_UNWIND
 
@@ -261,12 +263,14 @@ void generate_backtrace(void)
 	struct unwind_state state = { frames, 0, 128 };
 	_Unwind_Backtrace(unwind_callback, &state);
 
-	log_info("Backtrace (%d frames):", state.count);
+	log_info("Backtrace:");
 	for(int i = 0; i < state.count; i++)
 	{
 		void *rel = (void *)((uintptr_t)frames[i] - exe_load_addr);
 		log_frame(i, frames[i], rel);
 	}
+	log_info("  --- end of backtrace (%d frame%s) ---",
+	         state.count, state.count == 1 ? "" : "s");
 #else
 	log_info("!!! INFO: pihole-FTL has not been compiled with unwinding support, cannot generate backtrace !!!");
 #endif
