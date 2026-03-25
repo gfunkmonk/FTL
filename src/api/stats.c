@@ -234,7 +234,7 @@ cJSON *get_top_domains(struct ftl_conn *api, const int count,
 
 	// Heap-based top-K selection: allocate only for the top entries
 	// rather than for all domains, reducing memory from O(N) to O(K).
-	const unsigned int k = count > 0 ? (unsigned int)count : 0u;
+	const unsigned int k = count > 0 ? (unsigned int)count : 1u;
 	const unsigned int heap_cap = (k <= domains / 4) ? k * 4 : domains;
 	struct top_entries *top_domains = heap_cap > 0 ? calloc(heap_cap, sizeof(struct top_entries)) : NULL;
 	if(heap_cap > 0 && top_domains == NULL)
@@ -431,7 +431,7 @@ cJSON *get_top_clients(struct ftl_conn *api, const int count,
 
 	// Heap-based top-K selection: allocate only for the top entries
 	// rather than for all clients, reducing memory from O(N) to O(K).
-	const unsigned int k = count > 0 ? (unsigned int)count : 0u;
+	const unsigned int k = count > 0 ? (unsigned int)count : 1u;
 	const unsigned int heap_cap = (k <= clients / 4) ? k * 4 : clients;
 	struct top_entries *top_clients = heap_cap > 0 ? calloc(heap_cap, sizeof(struct top_entries)) : NULL;
 	if(heap_cap > 0 && top_clients == NULL)
