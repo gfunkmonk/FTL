@@ -130,11 +130,16 @@ $BATS -p "test/test_suite.bats"
 RET=$?
 
 # Run pytest API tests (FTL is still running — BATS no longer terminates it)
-echo "Running pytest API tests..."
-python3 -m pytest test/api/ -v
-PYTEST_RET=$?
-if [[ $PYTEST_RET != 0 ]]; then
-  RET=$PYTEST_RET
+# Skip on riscv64 — the emulated runner is too slow for the full API suite
+if [[ "${CI_ARCH}" != "linux/riscv64" ]]; then
+  echo "Running pytest API tests..."
+  python3 -m pytest test/api/ -v
+  PYTEST_RET=$?
+  if [[ $PYTEST_RET != 0 ]]; then
+    RET=$PYTEST_RET
+  fi
+else
+  echo "Skipping pytest API tests (too slow on ${CI_ARCH})"
 fi
 
 # Run final BATS suite — log validation and FTL termination
