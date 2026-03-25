@@ -42,6 +42,8 @@ do
         "dev"            ) dev=1;;
         "test"           ) test=1;;
         "test-fast"      ) test=1; export SKIP_PERF_TEST=1;;
+        "test-pytest"    ) test=1; export TEST_RUNNER=pytest;;
+        "test-pytest-fast") test=1; export TEST_RUNNER=pytest; export SKIP_PERF_TEST=1;;
         "clean-logs"     ) clean_logs=1;;
         "clang"          ) clang=1;;
         "ci"             ) builddir="cmake_ci/";;

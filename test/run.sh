@@ -89,13 +89,6 @@ if ! su pihole -s /bin/sh -c /home/pihole/pihole-FTL; then
   exit 1
 fi
 
-# Prepare BATS
-if [ -z "$BATS" ]; then
-  mkdir -p test/libs
-  git clone --depth=1 --quiet https://github.com/bats-core/bats-core test/libs/bats > /dev/null
-  BATS=test/libs/bats/bin/bats
-fi
-
 # Give FTL some time for startup preparations
 sleep 2
 
@@ -119,12 +112,26 @@ echo "FTL verbose version (CLI): "
 echo -n "Contained dnsmasq version (DNS): "
 dig TXT CHAOS version.bind @127.0.0.1 +short
 
-# Install py3-dnspython
-apk add --no-cache py3-dnspython
+# Install Python test dependencies
+apk add --no-cache py3-dnspython py3-requests py3-pytest
 
-# Run tests
-$BATS -p "test/test_suite.bats"
-RET=$?
+# Run tests using the selected runner (default: bats)
+if [[ "${TEST_RUNNER}" == "pytest" ]]; then
+  echo "Running pytest test suite..."
+  python3 -m pytest test/api/ -v
+  RET=$?
+else
+  # Prepare BATS
+  if [ -z "$BATS" ]; then
+    mkdir -p test/libs
+    git clone --depth=1 --quiet https://github.com/bats-core/bats-core test/libs/bats > /dev/null
+    BATS=test/libs/bats/bin/bats
+  fi
+
+  echo "Running BATS test suite..."
+  $BATS -p "test/test_suite.bats"
+  RET=$?
+fi
 
 curl_to_tricorder() {
   curl --silent --upload-file "${1}" https://tricorder.pi-hole.net
