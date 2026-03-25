@@ -3444,8 +3444,6 @@ void FTL_fork_and_bind_sockets(struct passwd *ent_pw, bool dnsmasq_start)
 	// the PID of the current process in the PID file
 	if(daemonmode)
 		go_daemon();
-	else
-		savePID();
 
 	// Initialize query database (pihole-FTL.db)
 	db_init();

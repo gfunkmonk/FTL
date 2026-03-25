@@ -182,8 +182,9 @@ void *DB_thread(void *val)
 	// Last memory log timestamp
 	time_t lastMemLog = 0;
 
-	// Last gravity performance statistics dump
-	time_t lastGravityStats = 0;
+	// Last gravity performance statistics dump (start from now so the first
+	// dump happens after 5 minutes of actual activity, not immediately)
+	time_t lastGravityStats = before;
 
 	// This thread runs until shutdown of the process. We keep this thread
 	// running when pihole-FTL.db is corrupted because reloading of privacy
