@@ -1306,6 +1306,7 @@ bool replace_queries_view_with_joins(sqlite3 *db)
 	if(!db_set_FTL_property(db, DB_VERSION, 22))
 	{
 		log_err("replace_queries_view_with_joins(): Failed to update database version!");
+		dbquery(db, "ROLLBACK");
 		return false;
 	}
 
