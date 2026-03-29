@@ -49,6 +49,20 @@
   [[ ${lines[0]} == "3" ]]
 }
 
+@test "Query with ID 0 has been saved to the database" {
+  # FTL exports queries from in-memory DB to disk after a configurable
+  # delay (default 30s). Poll up to 60s for the export to complete.
+  for i in $(seq 1 30); do
+    run bash -c './pihole-FTL sqlite3 /etc/pihole/pihole-FTL.db "SELECT COUNT(*) FROM queries WHERE id=0;"'
+    if [[ ${lines[0]} == "1" ]]; then
+      break
+    fi
+    sleep 2
+  done
+  printf "%s\n" "${lines[@]}"
+  [[ ${lines[0]} == "1" ]]
+}
+
 @test "FTL terminates with message" {
   logsize_before=$(stat -c%s /var/log/pihole/FTL.log)
   # Kill pihole-FTL after having completed all tests
