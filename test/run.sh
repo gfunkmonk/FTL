@@ -129,6 +129,12 @@ echo "Running BATS test suite..."
 $BATS -p "test/test_suite.bats"
 RET=$?
 
+# Trigger network table update (PARSE_NEIGHBOR_CACHE) so mock-hwaddr
+# devices like ip-127.0.0.1 exist before pytest checks them.
+# RT signal offset 5 maps to PARSE_NEIGHBOR_CACHE in signals.c.
+kill -SIGRTMIN+5 "$(cat /run/pihole-FTL.pid)" 2>/dev/null
+sleep 2
+
 # Run pytest API tests (FTL is still running — BATS no longer terminates it)
 # Skip on riscv64 — the emulated runner is too slow for the full API suite
 if [[ "${CI_ARCH}" != "linux/riscv64" ]]; then
