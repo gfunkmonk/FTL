@@ -187,8 +187,8 @@ fi
 # Restore umask
 umask "$OLDUMASK"
 
-# Run performance tests (skipped when SKIP_PERF_TEST=1, e.g. via "test-fast")
-if [[ "${SKIP_PERF_TEST}" != "1" ]]; then
+# Run performance tests (opt-in via RUN_PERF_TEST=1)
+if [[ "${RUN_PERF_TEST}" == "1" ]]; then
   if ! su pihole -s /bin/sh -c "/home/pihole/pihole-FTL --perf"; then
     echo "pihole-FTL --perf failed to start"
   fi
