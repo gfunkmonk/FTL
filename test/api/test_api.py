@@ -243,7 +243,7 @@ class TestDomainSearch:
         Regression test for https://github.com/pi-hole/FTL/issues/2837
         libidn2 rejects punycode for characters not in IDNA2008 (e.g. emoji),
         but the ASCII punycode form is a perfectly valid DNS name.
-        xn--4ca0bs45142c.com is the punycode encoding of äöü😀.com
+        xn--4ca0bs45142c.com is the punycode encoding of äöü😀.com.
         """
         data = _j(api_session.get(f"{FTL_URL}/api/search/xn--4ca0bs45142c.com",
                                   params={"debug": "true"}, timeout=5))

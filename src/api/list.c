@@ -455,7 +455,18 @@ static int api_list_write(struct ftl_conn *api,
 					// Stripping the reference flag is
 					// necessary to signal cJSON to free the
 					// allocated string later
-					it->valuestring = strdup(it->valuestring);
+					char *domain = strdup(it->valuestring);
+					if(domain == NULL)
+					{
+						if(allocated_json)
+							cJSON_Delete(row.items);
+						return send_json_error(api, 500, // 500 Internal Server Error
+						                       "internal_error",
+						                       "Memory allocation failed",
+						                       NULL);
+					}
+					it->valuestring = domain;
+					// Remove reference flag
 					it->type &= ~cJSON_IsReference;
 				}
 
