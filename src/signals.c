@@ -700,13 +700,17 @@ pid_t main_pid(void)
 // pure annotation would let the compiler cache/hoist the result across an
 // asynchronous signal-handler update. Suppress the corresponding warning
 // for just this function (see #2839).
+#if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wsuggest-attribute=pure"
+#endif
 const char *get_term_source(void)
 {
 	return term_source[0] != '\0' ? term_source : NULL;
 }
+#if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC diagnostic pop
+#endif
 
 void thread_sleepms(const enum thread_types thread, const int milliseconds)
 {
