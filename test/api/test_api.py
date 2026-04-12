@@ -11,9 +11,45 @@ Usage:
 
 import json
 
+import dns.resolver
 import pytest
 
 FTL_URL = "http://127.0.0.1"
+
+
+# ---------------------------------------------------------------------------
+# Upstream DNSSEC detection
+# ---------------------------------------------------------------------------
+# The bats test suite queries mask.icloud.com via an allowlisted client, which
+# forwards the query upstream.  The CNAME chain crosses icloud.com and
+# apple-dns.net.  When both zones carry DS records (DNSSEC-signed), dnsmasq
+# fires two extra DNSKEY validation queries, shifting several counters by +2.
+# Detect the current state once per session so the assertions below match
+# whichever configuration the upstream zones happen to be in.
+#
+# The check queries the local pdns_recursor on port 5555 directly (not through
+# FTL) to avoid polluting FTL's query counters.
+
+def _has_ds_record(domain):
+    """Return True if *domain* currently has a DS record."""
+    try:
+        resolver = dns.resolver.Resolver(configure=False)
+        resolver.nameservers = ["127.0.0.1"]
+        resolver.port = 5555
+        resolver.lifetime = 10
+        resolver.resolve(domain, "DS")
+        return True
+    except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN,
+            dns.resolver.NoNameservers, dns.exception.Timeout):
+        return False
+
+UPSTREAM_DNSSEC = _has_ds_record("icloud.com") and _has_ds_record("apple-dns.net")
+
+# Counters that shift when upstream DNSSEC is active
+TOTAL       = 137 if UPSTREAM_DNSSEC else 135
+FORWARDED   = 47  if UPSTREAM_DNSSEC else 45
+DNSKEY      = 9   if UPSTREAM_DNSSEC else 7
+TOP_DOMAIN  = "." if UPSTREAM_DNSSEC else "localhost"
 
 
 # ---------------------------------------------------------------------------
@@ -494,14 +530,14 @@ class TestStatsSummary:
     def test_summary_structure(self, api_session):
         data = _j(api_session.get(f"{FTL_URL}/api/stats/summary", timeout=5), dump="stats_summary")
         q = data["queries"]
-        assert q["total"] == 137, json.dumps(data, indent=2)
+        assert q["total"] == TOTAL, json.dumps(data, indent=2)
         assert q["blocked"] == 49
-        assert q["forwarded"] == 47
+        assert q["forwarded"] == FORWARDED
         assert q["cached"] == 41
         assert q["unique_domains"] == 77
         assert q["status"]["UNKNOWN"] == 0
         assert q["status"]["GRAVITY"] == 7
-        assert q["status"]["FORWARDED"] == 47
+        assert q["status"]["FORWARDED"] == FORWARDED
         assert q["status"]["CACHE"] == 41
         assert q["status"]["REGEX"] == 21
         assert q["status"]["DENYLIST"] == 4
@@ -527,7 +563,7 @@ class TestStatsTopDomains:
         counts = [d["count"] for d in domains]
         assert counts == sorted(counts, reverse=True), \
             f"Not sorted descending: {counts}"
-        assert data["total_queries"] == 137
+        assert data["total_queries"] == TOTAL
         assert data["blocked_queries"] == 49
 
     def test_top_domains_blocked(self, api_session):
@@ -559,7 +595,7 @@ class TestStatsTopClients:
         counts = [c["count"] for c in clients]
         assert counts == sorted(counts, reverse=True), \
             f"Not sorted descending: {counts}"
-        assert data["total_queries"] == 137
+        assert data["total_queries"] == TOTAL
 
 
 # ---------------------------------------------------------------------------
@@ -572,8 +608,8 @@ class TestStatsUpstreams:
         data = _j(api_session.get(f"{FTL_URL}/api/stats/upstreams", timeout=5), dump="upstreams")
         upstreams = data["upstreams"]
         assert len(upstreams) == 4, json.dumps(upstreams, indent=2)
-        assert data["total_queries"] == 137
-        assert data["forwarded_queries"] == 47
+        assert data["total_queries"] == TOTAL
+        assert data["forwarded_queries"] == FORWARDED
 
         blocklist = next(u for u in upstreams if u["ip"] == "blocklist")
         assert blocklist["count"] == 49
@@ -595,7 +631,7 @@ class TestStatsQueryTypes:
         assert data["types"] == {
             "A": 69, "AAAA": 19, "ANY": 3, "SRV": 1, "SOA": 0,
             "PTR": 8, "TXT": 10, "NAPTR": 1, "MX": 1, "DS": 7,
-            "RRSIG": 0, "DNSKEY": 9, "NS": 0, "SVCB": 3, "HTTPS": 3,
+            "RRSIG": 0, "DNSKEY": DNSKEY, "NS": 0, "SVCB": 3, "HTTPS": 3,
             "OTHER": 1,
         }, json.dumps(data, indent=2)
 
@@ -839,11 +875,11 @@ class TestPADD:
         assert data["blocking"] == "enabled"
         assert data["gravity_size"] == 8
         assert data["active_clients"] == 11
-        assert data["top_domain"] == "."
+        assert data["top_domain"] == TOP_DOMAIN
         assert data["top_blocked"] == "gravity.ftl"
         assert data["top_client"] == "127.0.0.1"
         q = data["queries"]
-        assert q["total"] == 137, json.dumps(data, indent=2)
+        assert q["total"] == TOTAL, json.dumps(data, indent=2)
         assert q["blocked"] == 49
         cache = data["cache"]
         assert cache["size"] == 10000
@@ -967,7 +1003,7 @@ class TestQueriesAdditional:
         queries = data["queries"]
         assert isinstance(queries, list)
         assert len(queries) > 0
-        assert data["recordsTotal"] == 137
+        assert data["recordsTotal"] == TOTAL
         # Check structure of a query entry
         q = queries[0]
         assert "id" in q
