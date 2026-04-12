@@ -14,9 +14,8 @@
 #include "datastructure.h"
 // Definition of struct regexData
 #include "regex_r.h"
-// Forward declaration for sqlite3_stmt (avoid pulling in full sqlite3.h)
-struct sqlite3_stmt;
-typedef struct sqlite3_stmt sqlite3_stmt;
+// SQLite3
+#include "database/sqlite3.h"
 
 // Table row record, not all fields are used by all tables
 typedef struct {

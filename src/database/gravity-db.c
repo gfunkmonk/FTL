@@ -2228,6 +2228,7 @@ bool gravityDB_readTable(const enum gravity_list_type listtype,
 		log_err("gravityDB_readTable(%d => (%s), %s): Failed to bind item (error %d) - %s",
 		        listtype, type, like_name, rc, *message);
 		sqlite3_finalize(*read_stmt_p);
+		*read_stmt_p = NULL;
 		if(!exact)
 			free(like_name);
 		free(querystr);
@@ -2242,6 +2243,7 @@ bool gravityDB_readTable(const enum gravity_list_type listtype,
 		log_err("gravityDB_readTable(%d => (%s), %s): Failed to bind ids (error %d) - %s",
 		        listtype, type, like_name, rc, *message);
 		sqlite3_finalize(*read_stmt_p);
+		*read_stmt_p = NULL;
 		if(!exact)
 			free(like_name);
 		free(querystr);
