@@ -28,7 +28,7 @@ mkdir -p /home/pihole /etc/pihole /run/pihole /var/log/pihole /etc/pihole/config
 echo "" > /var/log/pihole/FTL.log
 echo "" > /var/log/pihole/pihole.log
 echo "" > /var/log/pihole/webserver.log
-touch /run/pihole-FTL.pid dig.log ptr.log
+touch /run/pihole-FTL.pid ptr.log
 touch /etc/pihole/dhcp.leases
 chown -R pihole:pihole /etc/pihole /run/pihole /var/log/pihole
 chown pihole:pihole /run/pihole-FTL.pid
@@ -112,14 +112,6 @@ echo "FTL verbose version (CLI): "
 echo -n "Contained dnsmasq version (DNS): "
 dig TXT CHAOS version.bind @127.0.0.1 +short
 
-# Pre-warm DNSSEC root key cache. dnsmasq's DNSSEC validation can
-# trigger internal DNSKEY queries for the root zone at unpredictable
-# times. By explicitly querying DNSKEY for "." first, we force the
-# root key into cache so all subsequent DNSSEC validation uses the
-# cached key. This makes the total query count deterministic.
-dig DNSKEY . @127.0.0.1 +dnssec > /dev/null 2>&1
-sleep 1
-
 RET=0
 
 # Prepare BATS
@@ -175,9 +167,6 @@ if [[ $RET != 0 ]]; then
   echo ""
   echo -n "pihole/FTL.log: "
   curl_to_tricorder /var/log/pihole/FTL.log
-  echo ""
-  echo -n "dig.log: "
-  curl_to_tricorder ./dig.log
   echo ""
   echo -n "ptr.log: "
   curl_to_tricorder ./ptr.log
