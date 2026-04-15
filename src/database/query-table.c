@@ -515,47 +515,33 @@ bool get_memdb_size(size_t *memsize, int *queries)
 	int rc;
 	sqlite3 *db = get_memdb();
 	sqlite3_stmt *stmt = NULL;
-	size_t page_count, page_size;
+	size_t page_count = 0, page_size = 0;
 
-	// PRAGMA page_count
-	rc = sqlite3_prepare_v2(db, "PRAGMA page_count", -1, &stmt, NULL);
+	// Fetch page_count and page_size in a single round trip using the
+	// pragma_* table-valued functions. This replaces two prepare/step/
+	// finalize cycles with one. PRAGMAs cannot be combined inside a single
+	// sqlite3_prepare_v2() (only one statement per prepare), but the
+	// pragma_* TVFs can be cross-joined in a regular SELECT.
+	rc = sqlite3_prepare_v2(db,
+	                        "SELECT page_count, page_size "
+	                        "FROM pragma_page_count(), pragma_page_size()",
+	                        -1, &stmt, NULL);
 	if(rc != SQLITE_OK)
 	{
 		if(rc != SQLITE_BUSY)
-			log_err("init_memory_database(PRAGMA page_count): Prepare error: %s",
+			log_err("get_memdb_size(): Prepare error: %s",
 			        sqlite3_errstr(rc));
-
-		return false;
-	}
-	rc = sqlite3_step(stmt);
-	if( rc == SQLITE_ROW )
-		page_count = sqlite3_column_int(stmt, 0);
-	else
-	{
-		log_err("init_memory_database(PRAGMA page_count): Step error: %s",
-		        sqlite3_errstr(rc));
-		sqlite3_finalize(stmt);
-		return false;
-	}
-	sqlite3_finalize(stmt);
-
-	// PRAGMA page_size
-	rc = sqlite3_prepare_v2(db, "PRAGMA page_size", -1, &stmt, NULL);
-	if(rc != SQLITE_OK)
-	{
-		if(rc != SQLITE_BUSY)
-			log_err("init_memory_database(PRAGMA page_size): Prepare error: %s",
-			        sqlite3_errstr(rc));
-
 		return false;
 	}
 	rc = sqlite3_step(stmt);
 	if(rc == SQLITE_ROW)
-		page_size = sqlite3_column_int(stmt, 0);
+	{
+		page_count = sqlite3_column_int(stmt, 0);
+		page_size  = sqlite3_column_int(stmt, 1);
+	}
 	else
 	{
-		log_err("init_memory_database(PRAGMA page_size): Step error: %s",
-			 sqlite3_errstr(rc));
+		log_err("get_memdb_size(): Step error: %s", sqlite3_errstr(rc));
 		sqlite3_finalize(stmt);
 		return false;
 	}
