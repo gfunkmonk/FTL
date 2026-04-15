@@ -155,9 +155,17 @@ sqlite3* _dbopen(const bool readonly, const bool create, const char *func, const
 	log_debug(DEBUG_DATABASE, "Opening FTL database in %s() (node %s%s) (%s:%i)",
 	          func, readonly ? "RO" : "RW", create ? ",C" : "", short_path(file), line);
 
+	// SQLITE_OPEN_NOMUTEX: dbopen() connections are strictly single-
+	// threaded — every caller (civetweb worker, database thread) opens,
+	// uses, and closes the connection within one function scope, so the
+	// serialized-mode per-API-call mutex is pure overhead. The long-lived
+	// shared connections (_memdb in query-table.c, gravity_db) keep the
+	// default serialized mode because they are touched from multiple
+	// threads.
 	int flags = readonly ? SQLITE_OPEN_READONLY : SQLITE_OPEN_READWRITE;
 	if(create && !readonly)
 		flags |= SQLITE_OPEN_CREATE;
+	flags |= SQLITE_OPEN_NOMUTEX;
 
 	sqlite3 *db = NULL;
 	int rc = sqlite3_open_v2(config.files.database.v.s, &db, flags, NULL);
