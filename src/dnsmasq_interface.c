@@ -111,7 +111,14 @@ static uint64_t ftl_cache_misses = 0;
 #define PERF_STAT_FIND_DOMAIN    2  // findDomainID() hash lookup
 #define PERF_STAT_CHECK_BLOCKING 3  // FTL_check_blocking() total
 #define PERF_STAT_REPLY          4  // FTL_reply() under SHM lock
-#define PERF_STAT_COUNT          5
+// The two sub-slots below only fire on the cache-miss path inside
+// check_blocking (i.e. a domain/client combination that FTL has not
+// yet classified). They let the 5-minute rollup localize rare
+// multi-millisecond outliers to either the allowlist or the
+// denylist/gravity stage without per-call log spam.
+#define PERF_STAT_CB_ALLOWLIST   5  // in_allowlist() + in_regex(ALLOW)
+#define PERF_STAT_CB_DENYLIST    6  // check_domain_blocked() (primary + _esni fallback)
+#define PERF_STAT_COUNT          7
 
 static struct {
 	uint64_t calls;    // number of invocations
@@ -183,6 +190,8 @@ void FTL_dump_cache_stats(void)
 		"findDomainID",
 		"check_blocking",
 		"reply (total under lock)",
+		"check_blocking -> allowlist (miss path)",
+		"check_blocking -> denylist/gravity (miss path)",
 	};
 	for(unsigned int i = 0; i < PERF_STAT_COUNT; i++)
 	{
@@ -1868,11 +1877,13 @@ static bool FTL_check_blocking(const char *domainstr, queriesData *query, client
 	
 	// Check exact whitelist for match
 	const char *blockedDomain = domainstr;
+	PERF_START(_pcb_allow);
 	TIMED_DB_OP_RESULT(query->flags.allowed, in_allowlist(domainstr, dns_cache, client) == FOUND);
 
 	// If not found: Check regex whitelist for match
 	if(!query->flags.allowed)
 		TIMED_DB_OP_RESULT(query->flags.allowed, in_regex(domainstr, dns_cache, client->id, REGEX_ALLOW));
+	PERF_END(_pcb_allow, PERF_STAT_CB_ALLOWLIST);
 
 	// Check if this is a special domain
 	if(!query->flags.allowed && special_domain(query, domainstr))
@@ -1895,16 +1906,22 @@ static bool FTL_check_blocking(const char *domainstr, queriesData *query, client
 	unsigned char new_status = QUERY_UNKNOWN;
 	bool db_okay = true;
 	bool blockDomain;
+	PERF_START(_pcb_deny);
 	TIMED_DB_OP_RESULT(blockDomain, check_domain_blocked(domainstr, client, query, dns_cache, &new_status, &db_okay));
+	PERF_END(_pcb_deny, PERF_STAT_CB_DENYLIST);
 
 	// Check blacklist (exact + regex) and gravity for _esni.domain if enabled
-	// (defaulting to true)
+	// (defaulting to true). Timed into the same slot as the primary call above
+	// so the rollup reflects total denylist/gravity work per query, regardless
+	// of whether the _esni fallback ran.
 	if(config.dns.blockESNI.v.b &&
 	   !query->flags.allowed && !blockDomain &&
 	   domainstr[0] == '_' &&
 	   strncmp(domainstr, "_esni.", 6u) == 0 && domainstr[6] != '\0')
 	{
+		PERF_START(_pcb_deny_esni);
 		TIMED_DB_OP_RESULT(blockDomain, check_domain_blocked(domainstr + 6u, client, query, dns_cache, &new_status, &db_okay));
+		PERF_END(_pcb_deny_esni, PERF_STAT_CB_DENYLIST);
 
 		// Update DNS cache status
 		cacheStatus = dns_cache->blocking_status;
