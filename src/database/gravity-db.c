@@ -109,12 +109,21 @@ static inline const int32_t *bind_client_groups(sqlite3_stmt *stmt,
 #define GRAVITY_STATS_ANTIGRAVITY_ABP 3
 #define GRAVITY_STATS_DENYLIST        4
 #define GRAVITY_STATS_ALLOWLIST       5
+// Slot 6 measures the wrapper work inside in_gravity() around
+// domain_in_list() (client group re-check, per-client statement
+// prepare, carray bind). The slots 0–5 above already cover the
+// SQL step itself; the slot below captures everything in
+// in_gravity() that is *not* a domain_in_list() call. Useful for
+// localizing the 1–2 ms tail seen in CDB_GRAVITY which cannot be
+// the step (which tops out in the ~200 µs range in slot 0/1).
+#define GRAVITY_STATS_IG_WRAPPER      6
+#define GRAVITY_STATS_COUNT           7
 static struct {
-	uint64_t calls;    // number of domain_in_list() invocations
+	uint64_t calls;    // number of invocations
 	uint64_t total_us; // cumulative microseconds
 	uint64_t max_us;   // single-call maximum in us
 	uint64_t slow;     // calls that took more than 1 ms
-} gravity_perf[6];
+} gravity_perf[GRAVITY_STATS_COUNT];
 
 // Wrap a single domain_in_list() call with wall-clock timing.
 // result_var must be a writable lvalue; slot is one of GRAVITY_STATS_*.
@@ -140,6 +149,27 @@ do { \
 	else \
 		(result_var) = (call_expr); \
 } while(0)
+
+// Span-style counterpart to GRAVITY_TIMED_LOOKUP: start a timer with
+// GRAVITY_PERF_START, stop it with GRAVITY_PERF_END(slot). Same gating
+// on config.debug.performance.v.b, same gravity_perf[] target array.
+// Used to time wrapper code that isn't a single-expression call.
+#define GRAVITY_PERF_START(ts_var) \
+	struct timespec ts_var = {0}; \
+	if(config.debug.performance.v.b) \
+		clock_gettime(CLOCK_MONOTONIC, &(ts_var))
+#define GRAVITY_PERF_END(ts_var, slot) \
+	if(config.debug.performance.v.b) { \
+		struct timespec _gpe; \
+		clock_gettime(CLOCK_MONOTONIC, &_gpe); \
+		const int64_t _ns = (int64_t)(_gpe.tv_sec - (ts_var).tv_sec) * 1000000000LL \
+		                  + (int64_t)(_gpe.tv_nsec - (ts_var).tv_nsec); \
+		const uint64_t _us = (uint64_t)(_ns / 1000); \
+		gravity_perf[(slot)].calls++; \
+		gravity_perf[(slot)].total_us += _us; \
+		if(_us > gravity_perf[(slot)].max_us) gravity_perf[(slot)].max_us = _us; \
+		if(_us > 1000u) gravity_perf[(slot)].slow++; \
+	}
 
 // Variables memorizing the parent gravity database connection and prepared
 // statements to avoid valgrind warnings about memory leaks
@@ -1544,6 +1574,13 @@ enum db_result in_gravity(const char *domain, struct abp_patterns *abp, clientsD
 	if(gravity_shared_stmt == NULL || antigravity_shared_stmt == NULL)
 		return LIST_NOT_AVAILABLE;
 
+	// Time the non-step wrapper work (group re-check, per-client statement
+	// prepare, carray bind). The step itself is already timed separately
+	// by GRAVITY_TIMED_LOOKUP below. This slot closes the accounting gap
+	// between CDB_GRAVITY (whole-function) and the step measurement so
+	// we can localize the 1-2 ms tail seen in production.
+	GRAVITY_PERF_START(_ig_setup_ts);
+
 	// Check if this client needs a rechecking of group membership
 	gravityDB_client_check_again(client);
 
@@ -1567,6 +1604,8 @@ enum db_result in_gravity(const char *domain, struct abp_patterns *abp, clientsD
 	size_t *last = antigravity ? &last_bound_antigravity : &last_bound_gravity;
 	if(bind_client_groups(stmt, client->groupspos, last) == NULL)
 		return NOT_FOUND;
+
+	GRAVITY_PERF_END(_ig_setup_ts, GRAVITY_STATS_IG_WRAPPER);
 
 	// Check if domain is exactly in gravity list
 	enum db_result exact_match;
@@ -1658,10 +1697,12 @@ enum db_result in_denylist(const char *domain, DNSCacheData *dns_cache, clientsD
 // reset the counters. Intended to be called every 5 minutes from the DB thread.
 void gravityDB_dump_perf_stats(void)
 {
-	const char * const names[6] = { "gravity (exact)", "antigravity (exact)",
+	const char * const names[GRAVITY_STATS_COUNT] = {
+	                                "gravity (exact)", "antigravity (exact)",
 	                                "gravity (ABP)", "antigravity (ABP)",
-	                                "denylist", "allowlist" };
-	for(unsigned int i = 0; i < 6; i++)
+	                                "denylist", "allowlist",
+	                                "in_gravity wrapper (non-step)" };
+	for(unsigned int i = 0; i < GRAVITY_STATS_COUNT; i++)
 	{
 		if(gravity_perf[i].calls == 0)
 		{
