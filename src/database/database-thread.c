@@ -205,8 +205,8 @@ void *DB_thread(void *val)
 		// (only when debug.performance is enabled)
 		if(config.debug.performance.v.b && now - lastGravityStats >= 300)
 		{
-			FTL_dump_cache_stats();
-			gravityDB_dump_perf_stats();
+			TIMED_DB_OP(FTL_dump_cache_stats());
+			TIMED_DB_OP(gravityDB_dump_perf_stats());
 			lastGravityStats = now;
 		}
 
@@ -215,7 +215,7 @@ void *DB_thread(void *val)
 		// Do this once per second
 		if(now > before)
 		{
-			queries_to_database();
+			TIMED_DB_OP(queries_to_database());
 			before = now;
 
 			// Check if we need to reload gravity
@@ -225,11 +225,9 @@ void *DB_thread(void *val)
 				set_event(RELOAD_GRAVITY);
 			}
 
-			// Process any client group reloads deferred by the DNS
-			// thread. gravityDB_client_check_again() only schedules
-			// these now; picking them up here keeps the heavy
-			// re-prepare/regex-reload work off the DNS hot path.
-			gravityDB_process_pending_reloads();
+			// Re-check client group membership for any client still
+			// inside its 3-minute identification window
+			TIMED_DB_OP(gravityDB_recheck_clients());
 		}
 
 		// Intermediate cancellation-point
@@ -320,7 +318,7 @@ void *DB_thread(void *val)
 
 		// Process database related event queue elements
 		if(get_and_clear_event(RELOAD_GRAVITY))
-			FTL_reload_all_domainlists();
+			TIMED_DB_OP(FTL_reload_all_domainlists());
 
 		// Intermediate cancellation-point
 		BREAK_IF_KILLED();

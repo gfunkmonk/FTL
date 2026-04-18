@@ -1355,57 +1355,45 @@ void gravityDB_reload_groups(clientsData *client)
 	reload_per_client_regex(client);
 }
 
-// Check if this client needs a rechecking of group membership
-// This client may be identified by something that wasn't there on its first
-// query (hostname, MAC address, interface).
+// Re-check group membership for every client still within its initial 3-minute
+// identification window.
 //
-// The actual reload is *deferred* to the database thread rather than run inline
-// here. Production perf data showed that the inline call to
-// gravityDB_reload_groups() was the sole source of the ~1-2 ms tail in
-// cache-miss queries: each time a client's first-seen clock crossed a
-// 60/120/180-second boundary, the very next DNS query hitting in_gravity()
-// absorbed the cost of re-fetching groups and rebuilding per-client statements
-// and regex lookup — all under the SHM lock, on the hot path. Setting a pending
-// flag and letting the DB thread pick it up once per second pushes that work
-// off the DNS path; queries in the meantime use the previously-prepared
-// statements (already slightly stale by design between rechecks, so ≤1 s
-// additional staleness is immaterial).
-static void gravityDB_client_check_again(clientsData *client)
-{
-	// After NUM_RECHECKS the condition below is permanently false — skip
-	// the time() vDSO call entirely for mature clients (the overwhelming
-	// majority after the first three minutes of a client's lifetime)
-	if(client->reread_groups >= NUM_RECHECKS)
-		return;
-
-	const time_t diff = time(NULL) - client->firstSeen;
-	const unsigned char check_count = client->reread_groups + 1u;
-	if(check_count <= NUM_RECHECKS && diff > check_count * RECHECK_DELAY)
-	{
-		log_debug(DEBUG_CLIENTS, "Scheduling client group reload after %u seconds (%u%s check)",
-		          (unsigned int)diff, check_count, get_ordinal_suffix(check_count));
-		client->reread_groups++;
-		// Defer the heavy reload to the DB thread; see header comment above.
-		client->flags.reload_pending = true;
-	}
-}
-
-// Process all clients that have a pending group reload. Called from the
-// database thread once per second. Runs under the SHM lock because
-// gravityDB_reload_groups() mutates per-client state (found_group flag,
-// regex lookup table) that the DNS thread also reads. Cost when no
-// client is flagged is a single lock round-trip plus an O(N_clients)
-// flag scan, both of which are negligible at typical deployment sizes.
-void gravityDB_process_pending_reloads(void)
+// A client may be identified by something that wasn't there on its first query
+// (hostname, MAC address, interface): FTL discovers those asynchronously —
+// parse_neighbor_cache() fills in ARP/MAC data from /proc/net/arp, and the
+// resolver thread fills in reverse-DNS hostnames. The 60/120/180-second
+// rechecks give those async sources time to arrive, then re-run
+// get_client_groupids() so the client lands in the correct group once its
+// identity is complete.
+//
+// Rechecking is periodic maintenance, not per-query work. The DB thread
+// iterates all clients once per second and does the check itself; any client
+// whose firstSeen clock has just crossed a 60/120/180-second mark gets reloaded
+// here, on the DB thread, rather than on whichever DNS query happens to land in
+// the boundary. Mature clients (reread_groups >= NUM_RECHECKS) short-circuit to
+// a single conditional per scan. Runs under the SHM lock because
+// gravityDB_reload_groups() mutates per-client state the DNS thread also reads.
+void gravityDB_recheck_clients(void)
 {
 	lock_shm();
+	const time_t now = time(NULL);
 	for(unsigned int clientID = 0; clientID < counters->clients; clientID++)
 	{
 		clientsData *client = getClient(clientID, true);
-		if(client != NULL && client->flags.reload_pending)
+		// Skip recycled client and mature clients (reread_groups >=
+		// NUM_RECHECKS) which have already been rechecked the maximum
+		// number of times
+		if(client == NULL || client->reread_groups >= NUM_RECHECKS)
+			continue;
+
+		const time_t diff = now - (time_t)client->firstSeen;
+		const unsigned char check_count = client->reread_groups + 1u;
+		if(diff > check_count * RECHECK_DELAY)
 		{
+			log_debug(DEBUG_CLIENTS, "Reloading client groups after %u seconds (%u%s check)",
+			          (unsigned int)diff, check_count, get_ordinal_suffix(check_count));
+			client->reread_groups++;
 			gravityDB_reload_groups(client);
-			client->flags.reload_pending = false;
 		}
 	}
 	unlock_shm();
@@ -1418,12 +1406,6 @@ enum db_result in_allowlist(const char *domain, DNSCacheData *dns_cache, clients
 		return NOT_FOUND;
 
 	// Check shared statement availability
-	if(allowlist_shared_stmt == NULL)
-		return LIST_NOT_AVAILABLE;
-
-	// Check if this client needs a rechecking of group membership
-	gravityDB_client_check_again(client);
-
 	if(allowlist_shared_stmt == NULL)
 		return LIST_NOT_AVAILABLE;
 
@@ -1614,13 +1596,6 @@ enum db_result in_gravity(const char *domain, struct abp_patterns *abp, clientsD
 	// we can localize the 1-2 ms tail seen in production.
 	GRAVITY_PERF_START(_ig_setup_ts);
 
-	// Check if this client needs a rechecking of group membership
-	gravityDB_client_check_again(client);
-
-	// Re-check after possible reload
-	if(gravity_shared_stmt == NULL || antigravity_shared_stmt == NULL)
-		return LIST_NOT_AVAILABLE;
-
 	// Get list name for debug logging and domain_in_list()
 	const char *listname = antigravity ? "antigravity" : "gravity";
 
@@ -1699,12 +1674,6 @@ enum db_result in_denylist(const char *domain, DNSCacheData *dns_cache, clientsD
 		return NOT_FOUND;
 
 	// Check shared statement availability
-	if(denylist_shared_stmt == NULL)
-		return LIST_NOT_AVAILABLE;
-
-	// Check if this client needs a rechecking of group membership
-	gravityDB_client_check_again(client);
-
 	if(denylist_shared_stmt == NULL)
 		return LIST_NOT_AVAILABLE;
 
