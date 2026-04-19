@@ -89,7 +89,7 @@ static pid_t readPID(void)
 	pid_t pid = -1;
 	FILE *f = NULL;
 	// Open file for reading
-	if((f = fopen("/run/pihole-FTL.pid", "r")) == NULL)
+	if((f = fopen(FTL_PID_FILE, "r")) == NULL)
 	{
 		// Log error
 		log_warn("Unable to read PID from file: %s", strerror(errno));

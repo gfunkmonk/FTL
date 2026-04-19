@@ -10,6 +10,9 @@
 #ifndef CONFIG_H
 #define CONFIG_H
 
+// Hardcoded PID path — see GHSA-6w8x-p785-6pm4
+#define FTL_PID_FILE "/run/pihole-FTL.pid"
+
 // enum privacy_level
 #include "enums.h"
 #include <stdbool.h>

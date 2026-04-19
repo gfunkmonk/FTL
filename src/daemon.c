@@ -134,7 +134,7 @@ void savePID(void)
 	const pid_t pid = getpid();
 	// Open file for writing
 	FILE *f = NULL;
-	if((f = fopen("/run/pihole-FTL.pid", "w+")) == NULL)
+	if((f = fopen(FTL_PID_FILE, "w+")) == NULL)
 	{
 		// Log error
 		log_warn("Unable to write PID to file: %s", strerror(errno));
@@ -161,7 +161,7 @@ static void removePID(void)
 
 	FILE *f = NULL;
 	// Open file for writing to overwrite/empty it
-	if((f = fopen("/run/pihole-FTL.pid", "w")) == NULL)
+	if((f = fopen(FTL_PID_FILE, "w")) == NULL)
 	{
 		log_warn("Unable to empty PID file: %s", strerror(errno));
 		return;

@@ -1304,6 +1304,8 @@ void initConfig(struct config *conf)
 	conf->webserver.api.temp.unit.d.temp_unit = TEMP_UNIT_C;
 	conf->webserver.api.temp.unit.c = validate_stub; // Only type-based checking
 
+	// struct files
+	// Note: files.pid is hardcoded as FTL_PID_FILE — see GHSA-6w8x-p785-6pm4
 	conf->files.database.k = "files.database";
 	conf->files.database.h = "The location of FTL's long-term database";
 	conf->files.database.a = cJSON_CreateStringReference("Any FTL database");
