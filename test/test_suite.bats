@@ -778,6 +778,20 @@ setup() {
   [[ "${lines[0]}" == "80o,443os,[::]:80o,[::]:443os" ]]
 }
 
+@test "CLI --config fails when config and backups are unavailable" {
+  run bash -c '
+    config_backup=/etc/pihole/pihole.toml.batsbak
+    backup_dir_backup=/etc/pihole/config_backups.batsbak
+    mv /etc/pihole/pihole.toml "$config_backup"
+    mv /etc/pihole/config_backups "$backup_dir_backup"
+    trap "mv \"$config_backup\" /etc/pihole/pihole.toml; mv \"$backup_dir_backup\" /etc/pihole/config_backups" EXIT
+    ./pihole-FTL --config debug.regex 2>&1
+  '
+  printf "%s\n" "${lines[@]}"
+  [[ $status == 1 ]]
+  [[ ${lines[0]} == 'Error: Could not read or parse config file "/etc/pihole/pihole.toml" or its backup files. Please check that the file is accessible and that permissions are correct, or try running with sudo.' ]]
+}
+
 # NOTE: Log validation (WARNING/ERROR/CRIT/DB checks) moved to the final
 # log scan in run.sh, which runs after both BATS and pytest complete.
 
