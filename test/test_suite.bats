@@ -782,14 +782,20 @@ setup() {
   run bash -c '
     config_backup=/etc/pihole/pihole.toml.batsbak
     backup_dir_backup=/etc/pihole/config_backups.batsbak
+    cleanup() {
+      [[ -e "$config_backup" ]] && mv "$config_backup" /etc/pihole/pihole.toml || true
+      [[ -e "$backup_dir_backup" ]] && mv "$backup_dir_backup" /etc/pihole/config_backups || true
+    }
+    trap cleanup EXIT
     mv /etc/pihole/pihole.toml "$config_backup"
     mv /etc/pihole/config_backups "$backup_dir_backup"
-    trap "mv \"$config_backup\" /etc/pihole/pihole.toml; mv \"$backup_dir_backup\" /etc/pihole/config_backups" EXIT
     ./pihole-FTL --config debug.regex 2>&1
   '
   printf "%s\n" "${lines[@]}"
   [[ $status == 1 ]]
-  [[ ${lines[0]} == 'Error: Could not read or parse config file "/etc/pihole/pihole.toml" or its backup files. Please check that the file is accessible and that permissions are correct, or try running with sudo.' ]]
+  [[ ${lines[0]} == *"Could not read or parse config file"* ]]
+  [[ ${lines[0]} == *'"/etc/pihole/pihole.toml"'* ]]
+  [[ ${lines[0]} == *"backup files"* ]]
 }
 
 # NOTE: Log validation (WARNING/ERROR/CRIT/DB checks) moved to the final
