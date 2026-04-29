@@ -354,7 +354,8 @@ cJSON *get_top_domains(struct ftl_conn *api, const int count,
 	unlock_shm();
 
 	// Free temporary array
-	free(top_domains);
+	if(top_domains != NULL)
+		free(top_domains);
 
 	// Free regexes
 	if(N_regex_domains > 0)
@@ -597,7 +598,8 @@ cJSON *get_top_clients(struct ftl_conn *api, const int count,
 	unlock_shm();
 
 	// Free temporary array
-	free(top_clients);
+	if(top_clients != NULL)
+		free(top_clients);
 
 	// Free regexes
 	if(N_regex_clients > 0)
