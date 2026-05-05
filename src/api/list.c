@@ -385,7 +385,7 @@ static int api_list_write(struct ftl_conn *api,
 				break;
 		}
 	}
-	else if(!spaces_allowed)
+	else
 	{
 		cJSON *it = NULL;
 		cJSON_ArrayForEach(it, row.items)
@@ -397,18 +397,31 @@ static int api_list_write(struct ftl_conn *api,
 				break;
 			}
 
-			// Check validity: Spaces are not allowed in any domain/URL
-			if(strchr(it->valuestring, ' ') != NULL ||
-			   strchr(it->valuestring, '\t') != NULL ||
-			   strchr(it->valuestring, '\n') != NULL)
-			{
-				if(allocated_json)
-					cJSON_Delete(row.items);
-				return send_json_error(api, 400, // 400 Bad Request
-				                       "bad_request",
-				                       "Spaces, newlines and tabs are not allowed in domains and URLs",
-				                       it->valuestring);
+			// Check validity: Spaces are not allowed in any domain/URL (but allowed in group names)
+			if(!spaces_allowed) {
+				if(strchr(it->valuestring, ' ') != NULL ||
+					strchr(it->valuestring, '\t') != NULL)
+				{
+					if(allocated_json)
+						cJSON_Delete(row.items);
+					return send_json_error(api, 400, // 400 Bad Request
+											"bad_request",
+											"Spaces and tabs are not allowed in domains and URLs",
+											it->valuestring);
+				}
 			}
+
+			// Check validity: newlines are never allowed,
+			if(strchr(it->valuestring, '\n') != NULL)
+				{
+					if(allocated_json)
+						cJSON_Delete(row.items);
+					return send_json_error(api, 400, // 400 Bad Request
+											"bad_request",
+											"Newlines are not allowed in any input",
+											it->valuestring);
+				}
+			}		
 
 			if(listtype == GRAVITY_DOMAINLIST_ALLOW_EXACT ||
 			   listtype == GRAVITY_DOMAINLIST_DENY_EXACT)
