@@ -33,6 +33,8 @@
 #include "files.h"
 // sqliteBusyCallback()
 #include "common.h"
+// _Atomic
+#include <stdatomic.h>
 
 // Prefix of interface names in the client table
 #define INTERFACE_SEP ":"
@@ -2990,7 +2992,7 @@ void check_restored_gravity(void)
 	sqlite3_finalize(query_stmt);
 }
 
-static sqlite3_int64 last_updated = -1;
+static _Atomic sqlite3_int64 last_updated = -1;
 bool gravity_updated(void)
 {
 	bool changed = false;
@@ -3051,15 +3053,16 @@ bool gravity_updated(void)
 	const sqlite3_int64 updated = sqlite3_column_int64(query_stmt, 0);
 
 	// Check if timestamp has changed
-	if(last_updated == -1)
+	const sqlite3_int64 prev_updated = atomic_load_explicit(&last_updated, memory_order_relaxed);
+	if(prev_updated == -1)
 	{
 		// First run, set last_updated
-		last_updated = updated;
+		atomic_store_explicit(&last_updated, updated, memory_order_relaxed);
 	}
-	else if(last_updated < updated)
+	else if(prev_updated < updated)
 	{
 		// Gravity database has been updated
-		last_updated = updated;
+		atomic_store_explicit(&last_updated, updated, memory_order_relaxed);
 		changed = true;
 		log_info("Gravity database has been updated, reloading now");
 	}
@@ -3075,5 +3078,6 @@ bool gravity_updated(void)
 
 time_t __attribute__((pure)) gravity_last_updated(void)
 {
-	return last_updated > 0 ? (time_t)last_updated : 0;
+	const sqlite3_int64 updated = atomic_load_explicit(&last_updated, memory_order_relaxed);
+	return updated > 0 ? (time_t)updated : 0;
 }
