@@ -62,7 +62,11 @@ static size_t last_bound_denylist = 0;
 
 // Private variables
 static sqlite3 *gravity_db = NULL;
-static sqlite3_stmt* table_stmt = NULL;
+// Used by helper paths that prepare/step/finalize via gravityDB_finalizeTable().
+// Must be per-thread because civetweb workers execute API handlers concurrently.
+// A process-global statement pointer lets one worker overwrite/finalize another
+// worker's active statement, leading to use-after-free and random SIGSEGV.
+static _Thread_local sqlite3_stmt* table_stmt = NULL;
 bool gravityDB_opened = false;
 static bool gravity_abp_format = false;
 static bool gravity_has_antigravity = false;
