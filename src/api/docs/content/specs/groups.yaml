@@ -398,7 +398,7 @@ components:
             error:
               key: "database_error"
               message: "Could not add to gravity database"
-              hint: "Group already exists (UNIQUE constraint failed)"
+              hint: "The item is already present"
             took: 0.003
 
   parameters:

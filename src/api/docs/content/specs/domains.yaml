@@ -526,7 +526,7 @@ components:
             error:
               key: "database_error"
               message: "Could not add to gravity database"
-              hint: "Domain already exists (UNIQUE constraint failed)"
+              hint: "The item is already present"
             took: 0.003
       regex_error:
         invalid_regex:
