@@ -411,16 +411,15 @@ static int api_list_write(struct ftl_conn *api,
 				}
 			}
 
-			// Check validity: newlines are never allowed,
-			if(strchr(it->valuestring, '\n') != NULL)
-				{
-					if(allocated_json)
-						cJSON_Delete(row.items);
-					return send_json_error(api, 400, // 400 Bad Request
-											"bad_request",
-											"Newlines are not allowed in any input",
-											it->valuestring);
-				}
+			// Check validity: newlines and carriage returns are never allowed (prevents HTTP header injection)
+			if(strpbrk(it->valuestring, "\r\n") != NULL)
+			{
+				if(allocated_json)
+					cJSON_Delete(row.items);
+				return send_json_error(api, 400, // 400 Bad Request
+										"bad_request",
+										"Newlines and carriage returns are not allowed in any input",
+										it->valuestring);
 			}		
 
 			if(listtype == GRAVITY_DOMAINLIST_ALLOW_EXACT ||
