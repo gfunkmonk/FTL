@@ -33,8 +33,8 @@
 #include "files.h"
 // sqliteBusyCallback()
 #include "common.h"
-// _Atomic
-#include <stdatomic.h>
+// pthread_mutex_t
+#include <pthread.h>
 
 // Prefix of interface names in the client table
 #define INTERFACE_SEP ":"
@@ -2992,7 +2992,9 @@ void check_restored_gravity(void)
 	sqlite3_finalize(query_stmt);
 }
 
-static _Atomic sqlite3_int64 last_updated = -1;
+// Shared between the DB thread and API/status readers
+static sqlite3_int64 last_updated = -1;
+static pthread_mutex_t last_updated_lock = PTHREAD_MUTEX_INITIALIZER;
 bool gravity_updated(void)
 {
 	bool changed = false;
@@ -3053,19 +3055,21 @@ bool gravity_updated(void)
 	const sqlite3_int64 updated = sqlite3_column_int64(query_stmt, 0);
 
 	// Check if timestamp has changed
-	const sqlite3_int64 prev_updated = atomic_load_explicit(&last_updated, memory_order_relaxed);
+	pthread_mutex_lock(&last_updated_lock);
+	const sqlite3_int64 prev_updated = last_updated;
 	if(prev_updated == -1)
 	{
 		// First run, set last_updated
-		atomic_store_explicit(&last_updated, updated, memory_order_relaxed);
+		last_updated = updated;
 	}
 	else if(prev_updated < updated)
 	{
 		// Gravity database has been updated
-		atomic_store_explicit(&last_updated, updated, memory_order_relaxed);
+		last_updated = updated;
 		changed = true;
 		log_info("Gravity database has been updated, reloading now");
 	}
+	pthread_mutex_unlock(&last_updated_lock);
 
 	// Finalize statement
 	sqlite3_finalize(query_stmt);
@@ -3076,8 +3080,11 @@ bool gravity_updated(void)
 	return changed;
 }
 
-time_t __attribute__((pure)) gravity_last_updated(void)
+// Thread-safe getter for the last updated timestamp of the gravity database
+time_t gravity_last_updated(void)
 {
-	const sqlite3_int64 updated = atomic_load_explicit(&last_updated, memory_order_relaxed);
+	pthread_mutex_lock(&last_updated_lock);
+	const sqlite3_int64 updated = last_updated;
+	pthread_mutex_unlock(&last_updated_lock);
 	return updated > 0 ? (time_t)updated : 0;
 }
