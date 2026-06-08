@@ -23,6 +23,8 @@
 #include <nettle/sha1.h>
 // pthread_mutex_t
 #include <pthread.h>
+// nettle version
+#include <nettle/version.h>
 
 static uint32_t hotp(const uint8_t *key, size_t key_len, const uint64_t counter, const uint8_t digits)
 {
