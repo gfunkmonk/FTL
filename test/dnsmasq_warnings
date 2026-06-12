@@ -157,7 +157,7 @@ src/dnsmasq/rfc2131.c
 		    daemon->addrbuff, daemon->dhcp_buff);
 src/dnsmasq/rfc2131.c
 		  my_syslog(MS_DHCP | LOG_WARNING, _("not using configured address %s because it is leased to %s"),
-			    daemon->addrbuff, print_mac(daemon->namebuff, mac, len));
+			    daemon->addrbuff, print_mac(mac, len));
 src/dnsmasq/rfc2131.c
 		    my_syslog(MS_DHCP | LOG_WARNING, _("not using configured address %s because it is in use by the server or relay"), daemon->addrbuff);
 src/dnsmasq/rfc2131.c
