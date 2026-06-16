@@ -705,18 +705,18 @@ setup() {
   run bash -c './pihole-FTL backtrace'
   printf "%s\n" "${lines[@]}"
   # This path generates a backtrace without crashing, so it exits cleanly
-  [[ $status == 0 ]]
+  assert_success
   # The header reports a frame count (and, for a real crash, the unwind source)
-  [[ "${lines[0]}" == "Backtrace ("*"frames"*"):" ]]
+  assert_line --regexp --index 0 '^Backtrace \([^)]*frames[^)]*\):$'
   # At least the first two frames are collected
-  [[ "${output}" == *"#0"* ]]
-  [[ "${output}" == *"#1"* ]]
+  assert_output --partial "#0"
+  assert_output --partial "#1"
   # The calling chain is symbolized (addr2line or the dladdr fallback): the
   # 'backtrace' subcommand is reached via parse_args() from main()
-  [[ "${output}" == *"parse_args"* ]]
-  [[ "${output}" == *"main"* ]]
+  assert_output --partial "parse_args"
+  assert_output --partial "main"
   # The closing marker is present
-  [[ "${output}" == *"--- end of backtrace"* ]]
+  assert_output --partial "--- end of backtrace"
 }
 
 @test "'pihole-FTL backtrace' resolves source locations when addr2line is present" {
@@ -725,11 +725,11 @@ setup() {
   fi
   run bash -c './pihole-FTL backtrace'
   printf "%s\n" "${lines[@]}"
-  [[ $status == 0 ]]
+  assert_success
   # parse_args() resolves to its project-relative source location
-  [[ "${output}" == *"src/args.c"* ]]
+  assert_output --partial "src/args.c"
   # addr2line is available, so the 'not installed' hint must not be printed
-  [[ "${output}" != *"addr2line is not installed"* ]]
+  refute_output --partial "addr2line is not installed"
 }
 
 @test "'pihole-FTL backtrace' prints resolve guidance when addr2line is unavailable" {
@@ -740,11 +740,11 @@ setup() {
   # reproducer command.
   run bash -c 'PATH="" ./pihole-FTL backtrace'
   printf "%s\n" "${lines[@]}"
-  [[ $status == 0 ]]
-  [[ "${output}" == *"Backtrace ("* ]]
-  [[ "${output}" == *"addr2line is not installed"* ]]
-  [[ "${output}" == *"unresolved frame"* ]]
-  [[ "${output}" == *"addr2line -f -e"* ]]
+  assert_success
+  assert_output --partial "Backtrace ("
+  assert_output --partial "addr2line is not installed"
+  assert_output --partial "unresolved frame"
+  assert_output --partial "addr2line -f -e"
 }
 
 # NOTE: Log validation (WARNING/ERROR/CRIT/DB checks) moved to the final
