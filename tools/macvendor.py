@@ -12,17 +12,35 @@
 
 import os
 import re
+import sys
+import gzip
 import requests
 import sqlite3
 
-# Download raw data from Wireshark's website
-# We use the official URL recommended in the header of this file
-URL = "https://www.wireshark.org/download/automated/data/manuf"
-# User-Agent string to use for the request
-USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.36"
-print("Downloading...")
-manuf = requests.get(URL, headers={"User-Agent": USER_AGENT}).text.splitlines()
-print("...done")
+if len(sys.argv) > 1:
+	# Read from local file
+	filename = sys.argv[1]
+	print("Reading from " + filename + "...")
+	try:
+		if filename.endswith(".gz"):
+			with gzip.open(filename, "rt", encoding="UTF-8") as f:
+				manuf = f.read().splitlines()
+		else:
+			with open(filename, "r", encoding="UTF-8") as f:
+				manuf = f.read().splitlines()
+	except OSError as e:
+		print("Error: cannot access " + filename + " - " + str(e))
+		sys.exit(1)
+	print("...done")
+else:
+	# Download raw data from Wireshark's website
+	# We use the official URL recommended in the header of this file
+	URL = "https://www.wireshark.org/download/automated/data/manuf"
+	# User-Agent string to use for the request
+	USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.36"
+	print("Downloading...")
+	manuf = requests.get(URL, headers={"User-Agent": USER_AGENT}).text.splitlines()
+	print("...done")
 
 # Read file into memory and process lines
 data = []
