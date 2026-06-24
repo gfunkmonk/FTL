@@ -1704,6 +1704,16 @@ setup() {
   assert_success
 }
 
+@test "Stalled TLS handshakes do not busy-spin the CPU" {
+  # Regression test for the mbedTLS 100% CPU busy-spin (pi-hole/FTL#2882):
+  # a client that opens a TCP connection to the HTTPS port but never sends a
+  # ClientHello must not peg a webserver worker thread. See the helper script
+  # for the measurement details.
+  run bash -c "bash test/civetweb_handshake_cpu.sh"
+  assert_success
+  assert_output --partial "% of one core"
+}
+
 @test "X.509 certificate parser returns expected result" {
   # We are getting the certificate from the config
   run bash -c './pihole-FTL --read-x509'
