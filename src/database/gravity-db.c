@@ -656,6 +656,13 @@ static bool get_client_groupids(clientsData *client)
 			         client->hwaddr[0], client->hwaddr[1], client->hwaddr[2],
 			         client->hwaddr[3], client->hwaddr[4], client->hwaddr[5]);
 
+			// Mark the MAC as obtained so the gravity client table is
+			// actually queried for it below. Without this, the synthesized
+			// address is logged but never used, and a client whose new IP
+			// is not yet in the network_addresses table falls back to the
+			// default group despite its MAC being known in-memory (#2912).
+			got_hwaddr = true;
+
 			log_debug(DEBUG_CLIENTS, "--> Obtained %s from internal ARP cache", hwaddr);
 		}
 	}
