@@ -4,8 +4,18 @@
 #include <stdlib.h>
 #include <stdarg.h>
 #include <string.h>
+#include <errno.h>
+#include <unistd.h>
+#include <sys/wait.h>
 
-#include "zip/tar.h"
+// Include the implementation directly so the tests can exercise the
+// file-internal helpers (parse_tar_size(), tar_entry_span()) and reuse the
+// TAR_* layout constants instead of duplicating them here. tar.c pulls in
+// FTL.h, which redefines the libc string/memory calls to FTL* wrappers; the
+// #undef block below restores the plain libc names for the test code itself,
+// and the handful of FTL* wrappers tar.c needs are provided as thin stubs
+// further down.
+#include "zip/tar.c"
 
 #undef calloc
 #undef free
@@ -20,13 +30,12 @@
 #undef memcpy
 #undef memset
 
-#define TAR_BLOCK_SIZE 512
-#define TAR_NAME_SIZE 100
-#define TAR_SIZE_SIZE 12
-#define TAR_SIZE_OFFSET 124
+// Header-field offsets the parser never reads (so they are not defined in
+// tar.c) but which the fixtures below need to assemble valid headers. The
+// layout/size constants the parser does use - TAR_BLOCK_SIZE, TAR_NAME_SIZE,
+// TAR_SIZE_SIZE, TAR_SIZE_OFFSET, TAR_MAGIC_OFFSET - come from tar.c.
 #define TAR_CHECKSUM_OFFSET 148
 #define TAR_TYPEFLAG_OFFSET 156
-#define TAR_MAGIC_OFFSET 257
 #define TAR_VERSION_OFFSET 263
 
 static int failures = 0;
@@ -123,26 +132,6 @@ static void expect(const bool condition, const char *message)
 
 	fprintf(stderr, "FAIL: %s\n", message);
 	failures++;
-}
-
-static bool tar_entry_span(const size_t size, size_t *span)
-{
-	if (size % TAR_BLOCK_SIZE)
-	{
-		if (size > SIZE_MAX - TAR_BLOCK_SIZE * 2)
-			return false;
-
-		*span = (2 + size / TAR_BLOCK_SIZE) * TAR_BLOCK_SIZE;
-	}
-	else
-	{
-		if (size > SIZE_MAX - TAR_BLOCK_SIZE)
-			return false;
-
-		*span = (1 + size / TAR_BLOCK_SIZE) * TAR_BLOCK_SIZE;
-	}
-
-	return true;
 }
 
 static void write_size_octal(uint8_t *field, const size_t size)
@@ -511,6 +500,54 @@ static int run_named_test(const char *name)
 	return 2;
 }
 
+// Run a single test in a forked child so a sanitizer abort (or any crash)
+// fails only that case instead of taking down the rest of the suite. This
+// restores the per-case isolation of the previous Python harness without
+// duplicating the parser: a single `./tar_regression` invocation still runs
+// every case under -DTAR_REGRESSION_SANITIZE=ON. The child prints its own
+// PASS/FAIL line via run_test(); the parent only reports cases that died by
+// signal, where run_test() never got to return.
+static int run_test_isolated(const struct tar_test *test)
+{
+	fflush(NULL);
+
+	pid_t pid = fork();
+	if (pid < 0) {
+		// fork() is unavailable - fall back to running in-process. A
+		// sanitizer abort would still stop the suite here, but a clean
+		// build runs every case.
+		return run_test(test);
+	}
+
+	if (pid == 0) {
+		int rc = run_test(test);
+		// _exit() does not flush stdio, so drain the child's PASS/FAIL
+		// output (fully buffered when stdout is not a terminal) first.
+		fflush(NULL);
+		_exit(rc);
+	}
+
+	int wstatus = 0;
+	while (waitpid(pid, &wstatus, 0) < 0) {
+		if (errno != EINTR) {
+			fprintf(stderr, "FAIL %s: waitpid failed (%s)\n",
+			        test->name, strerror(errno));
+			return 1;
+		}
+	}
+
+	if (WIFEXITED(wstatus))
+		return WEXITSTATUS(wstatus) == 0 ? 0 : 1;
+
+	if (WIFSIGNALED(wstatus))
+		fprintf(stderr, "FAIL %s: terminated by signal %d\n",
+		        test->name, WTERMSIG(wstatus));
+	else
+		fprintf(stderr, "FAIL %s: abnormal termination\n", test->name);
+
+	return 1;
+}
+
 static void list_tests(void)
 {
 	for (size_t i = 0; i < sizeof(tests) / sizeof(tests[0]); i++)
@@ -532,9 +569,12 @@ int main(int argc, char **argv)
 		return status;
 	}
 
+	// Full suite: isolate each case in its own process so one sanitizer
+	// abort does not hide the results of the cases that follow. Named
+	// cases (handled above) stay in-process for straightforward debugging.
 	int status = 0;
 	for (size_t i = 0; i < sizeof(tests) / sizeof(tests[0]); i++)
-		if (run_test(&tests[i]) != 0)
+		if (run_test_isolated(&tests[i]) != 0)
 			status = 1;
 
 	return status;
