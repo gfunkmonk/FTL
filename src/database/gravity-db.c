@@ -2026,7 +2026,10 @@ bool gravityDB_addToTable(const enum gravity_list_type listtype, tablerow *row,
 	}
 	else
 	{
-		*message = sqlite3_errmsg(gravity_db);
+		if(rc == SQLITE_CONSTRAINT)
+			*message = "The item is already present";
+		else
+			*message = sqlite3_errmsg(gravity_db);
 	}
 
 	// Finalize statement and close database handle
