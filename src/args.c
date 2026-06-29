@@ -383,10 +383,17 @@ void parse_args(int argc, char *argv[])
 		if(querying && file_exists(GLOBALTOMLPATH))
 		{
 			if(access(GLOBALTOMLPATH, R_OK) != 0)
+			{
+				const int err = errno;
 				fprintf(stderr, "Warning: %s exists but cannot be read (%s).\n"
-				                "         The value shown below may not reflect the current configuration.\n"
-				                "         Try running this command with sudo.\n",
-				        GLOBALTOMLPATH, strerror(errno));
+				                "         The value shown below may not reflect the current configuration.\n",
+				        GLOBALTOMLPATH, strerror(err));
+				// Only suggest sudo for permission-related errors; other
+				// failures (e.g. I/O errors) are not fixed by elevated
+				// privileges.
+				if(err == EACCES || err == EPERM)
+					fprintf(stderr, "         Try running this command with sudo.\n");
+			}
 			else if(!conf_read)
 				fprintf(stderr, "Warning: %s could not be parsed.\n"
 				                "         The value shown below may not reflect the current configuration.\n",
