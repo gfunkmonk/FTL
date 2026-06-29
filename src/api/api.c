@@ -261,14 +261,29 @@ int api_handler(struct mg_connection *conn, void *ignored)
 		// or any request carrying a JSON body or custom headers) and only
 		// send the actual request if the preflight is answered with the
 		// matching Access-Control-Allow-* headers. We mirror the same CORS
-		// configuration civetweb applies to ordinary responses so that all
-		// methods behave consistently.
+		// configuration civetweb applies to ordinary responses (see
+		// send_cors_header()) so that all methods behave consistently.
+		//
+		// Like send_cors_header(), we only emit the CORS headers when the
+		// request actually carries an "Origin" header (every cross-origin
+		// preflight does) and otherwise answer with a plain 204. When the
+		// allowed origin is the "*" wildcard and the server is configured to
+		// replace it with the requesting origin (replace_asterisk_with_origin),
+		// we reflect the request's Origin instead of the literal "*".
 		// See https://github.com/pi-hole/FTL/issues/2261
 		const struct mg_context *ctx = mg_get_context(conn);
 		const char *allow_origin = mg_get_option(ctx, "access_control_allow_origin");
-		if(allow_origin != NULL && allow_origin[0] != '\0')
+		const char *origin = mg_get_header(conn, "Origin");
+		if(allow_origin != NULL && allow_origin[0] != '\0' &&
+		   origin != NULL && origin[0] != '\0')
 		{
-			mg_printf(conn, "Access-Control-Allow-Origin: %s\r\n", allow_origin);
+			const char *replace_asterisk = mg_get_option(ctx, "replace_asterisk_with_origin");
+			if(allow_origin[0] == '*' && replace_asterisk != NULL &&
+			   strcasecmp(replace_asterisk, "yes") == 0)
+				mg_printf(conn, "Access-Control-Allow-Origin: %s\r\n", origin);
+			else
+				mg_printf(conn, "Access-Control-Allow-Origin: %s\r\n", allow_origin);
+
 			mg_printf(conn, "Access-Control-Allow-Methods: %s\r\n", methods);
 
 			// Advertise the allowed request headers. When configured to

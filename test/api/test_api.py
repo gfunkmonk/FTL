@@ -129,6 +129,18 @@ class TestCORS:
         assert "Access-Control-Allow-Origin" in r.headers
         assert "DELETE" in r.headers.get("Access-Control-Allow-Methods", "")
 
+    def test_preflight_without_origin_omits_cors_headers(self, api_session):
+        """A bare OPTIONS request (no Origin) is not a CORS preflight.
+
+        Like civetweb's send_cors_header(), we only emit Access-Control-Allow-*
+        when the request carries an Origin header, otherwise we answer with a
+        plain 204 and just the RFC 7231 Allow header.
+        """
+        r = api_session.options(f"{FTL_URL}/api/auth", timeout=5)
+        assert r.status_code == 204
+        assert "Allow" in r.headers
+        assert "Access-Control-Allow-Origin" not in r.headers
+
     def test_error_response_carries_cors_header(self, api_session):
         """Non-200 responses include Access-Control-Allow-Origin too.
 
