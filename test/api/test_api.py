@@ -100,6 +100,51 @@ class TestHTTPErrors:
 
 
 # ---------------------------------------------------------------------------
+# CORS headers for cross-origin web apps
+# ---------------------------------------------------------------------------
+
+class TestCORS:
+    """Cross-origin requests must work for all methods.
+
+    Browsers send a preflight OPTIONS request before "non-simple" cross-origin
+    requests (DELETE, PUT, PATCH, JSON POST) and only send the real request if
+    the preflight is answered with the matching Access-Control-Allow-* headers.
+    The actual response must carry Access-Control-Allow-Origin as well.
+    Regression test for https://github.com/pi-hole/FTL/issues/2261.
+    """
+
+    ORIGIN = "http://example.com"
+
+    def test_preflight_returns_cors_headers(self, api_session):
+        """OPTIONS preflight advertises the allowed origin and methods."""
+        r = api_session.options(
+            f"{FTL_URL}/api/auth",
+            headers={
+                "Origin": self.ORIGIN,
+                "Access-Control-Request-Method": "DELETE",
+            },
+            timeout=5,
+        )
+        assert r.status_code == 204
+        assert "Access-Control-Allow-Origin" in r.headers
+        assert "DELETE" in r.headers.get("Access-Control-Allow-Methods", "")
+
+    def test_error_response_carries_cors_header(self, api_session):
+        """Non-200 responses include Access-Control-Allow-Origin too.
+
+        DELETE endpoints answer with 204 No Content, which - like this 404 - is
+        sent via the same code path that previously omitted the CORS header.
+        """
+        r = api_session.get(
+            f"{FTL_URL}/api/undefined",
+            headers={"Origin": self.ORIGIN},
+            timeout=5,
+        )
+        assert r.status_code == 404
+        assert "Access-Control-Allow-Origin" in r.headers
+
+
+# ---------------------------------------------------------------------------
 # Config validation via API (type-based)
 # ---------------------------------------------------------------------------
 
