@@ -237,8 +237,7 @@ int api_handler(struct mg_connection *conn, void *ignored)
 	if(api.method == HTTP_OPTIONS)
 	{
 		// Build a comma-separated list of the methods allowed for this
-		// endpoint. It is used both for the RFC 7231 "Allow" header and for
-		// the CORS "Access-Control-Allow-Methods" header below.
+		// endpoint for the RFC 7231 "Allow" header.
 		char methods[256] = "";
 		unsigned int m = 0;
 		for(enum http_method j = HTTP_GET; j < HTTP_OPTIONS; j <<= 1)
@@ -256,48 +255,15 @@ int api_handler(struct mg_connection *conn, void *ignored)
 		mg_printf(conn, "HTTP/1.1 204 No Content\r\n"
 		                "Allow: %s\r\n", methods);
 
-		// CORS preflight headers. Browsers send a preflight OPTIONS request
-		// before "non-simple" cross-origin requests (e.g. DELETE, PUT, PATCH
-		// or any request carrying a JSON body or custom headers) and only
-		// send the actual request if the preflight is answered with the
-		// matching Access-Control-Allow-* headers. We mirror the same CORS
-		// configuration civetweb applies to ordinary responses (see
-		// send_cors_header()) so that all methods behave consistently.
-		//
-		// Like send_cors_header(), we only emit the CORS headers when the
-		// request actually carries an "Origin" header (every cross-origin
-		// preflight does) and otherwise answer with a plain 204. When the
-		// allowed origin is the "*" wildcard and the server is configured to
-		// replace it with the requesting origin (replace_asterisk_with_origin),
-		// we reflect the request's Origin instead of the literal "*".
+		// Note: we do not emit the CORS Access-Control-Allow-* preflight
+		// headers here. Civetweb's built-in CORS handler (step 4 of
+		// handle_request()) intercepts and answers valid cross-origin
+		// preflights - those carrying both an "Origin" and an
+		// "Access-Control-Request-Method" header - with a 200 response and the
+		// matching headers before the request is ever routed to this handler.
+		// We therefore only reach this branch for non-preflight OPTIONS
+		// requests, which just need the RFC 7231 "Allow" header.
 		// See https://github.com/pi-hole/FTL/issues/2261
-		const struct mg_context *ctx = mg_get_context(conn);
-		const char *allow_origin = mg_get_option(ctx, "access_control_allow_origin");
-		const char *origin = mg_get_header(conn, "Origin");
-		if(allow_origin != NULL && allow_origin[0] != '\0' &&
-		   origin != NULL && origin[0] != '\0')
-		{
-			const char *replace_asterisk = mg_get_option(ctx, "replace_asterisk_with_origin");
-			if(allow_origin[0] == '*' && replace_asterisk != NULL &&
-			   strcasecmp(replace_asterisk, "yes") == 0)
-				mg_printf(conn, "Access-Control-Allow-Origin: %s\r\n", origin);
-			else
-				mg_printf(conn, "Access-Control-Allow-Origin: %s\r\n", allow_origin);
-
-			mg_printf(conn, "Access-Control-Allow-Methods: %s\r\n", methods);
-
-			// Advertise the allowed request headers. When configured to
-			// allow any header ("*"), reflect the headers the browser asks
-			// for; otherwise return the explicitly configured list.
-			const char *allow_headers = mg_get_option(ctx, "access_control_allow_headers");
-			const char *req_headers = mg_get_header(conn, "Access-Control-Request-Headers");
-			if(allow_headers != NULL && allow_headers[0] == '*' && req_headers != NULL)
-				mg_printf(conn, "Access-Control-Allow-Headers: %s\r\n", req_headers);
-			else if(allow_headers != NULL && allow_headers[0] != '\0')
-				mg_printf(conn, "Access-Control-Allow-Headers: %s\r\n", allow_headers);
-
-			mg_printf(conn, "Access-Control-Max-Age: 60\r\n");
-		}
 
 		// Finish header and send empty body
 		mg_printf(conn, "Content-Length: 0\r\n"

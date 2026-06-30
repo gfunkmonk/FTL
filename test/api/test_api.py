@@ -116,7 +116,13 @@ class TestCORS:
     ORIGIN = "http://example.com"
 
     def test_preflight_returns_cors_headers(self, api_session):
-        """OPTIONS preflight advertises the allowed origin and methods."""
+        """OPTIONS preflight advertises the allowed origin and methods.
+
+        A valid cross-origin preflight (carrying both Origin and
+        Access-Control-Request-Method) is answered by civetweb's built-in CORS
+        handler with a 200 response and the matching Access-Control-Allow-*
+        headers, before the request reaches FTL's own OPTIONS branch.
+        """
         r = api_session.options(
             f"{FTL_URL}/api/auth",
             headers={
@@ -125,7 +131,7 @@ class TestCORS:
             },
             timeout=5,
         )
-        assert r.status_code == 204
+        assert r.status_code == 200
         assert "Access-Control-Allow-Origin" in r.headers
         assert "DELETE" in r.headers.get("Access-Control-Allow-Methods", "")
 
