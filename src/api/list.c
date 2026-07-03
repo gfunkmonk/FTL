@@ -370,6 +370,20 @@ static int api_list_write(struct ftl_conn *api,
 				break;
 			}
 
+			// Newlines and carriage returns are never allowed (prevents
+			// HTTP header injection when the item is echoed back in the
+			// Location response header). Regex items reach that header too,
+			// so this must be checked here as well as in the branch below.
+			if(strpbrk(it->valuestring, "\r\n") != NULL)
+			{
+				if(allocated_json)
+					cJSON_Delete(row.items);
+				return send_json_error(api, 400, // 400 Bad Request
+				                       "bad_request",
+				                       "Newlines and carriage returns are not allowed in any input",
+				                       it->valuestring);
+			}
+
 			// Check every array element for its validity
 			okay = compile_regex(it->valuestring, &regex, &regex_msg);
 
@@ -398,16 +412,17 @@ static int api_list_write(struct ftl_conn *api,
 			}
 
 			// Check validity: Spaces are not allowed in any domain/URL (but allowed in group names)
-			if(!spaces_allowed) {
+			if(!spaces_allowed)
+			{
 				if(strchr(it->valuestring, ' ') != NULL ||
 					strchr(it->valuestring, '\t') != NULL)
 				{
 					if(allocated_json)
 						cJSON_Delete(row.items);
 					return send_json_error(api, 400, // 400 Bad Request
-											"bad_request",
-											"Spaces and tabs are not allowed in domains and URLs",
-											it->valuestring);
+					                       "bad_request",
+					                       "Spaces and tabs are not allowed in domains and URLs",
+					                       it->valuestring);
 				}
 			}
 
@@ -417,10 +432,10 @@ static int api_list_write(struct ftl_conn *api,
 				if(allocated_json)
 					cJSON_Delete(row.items);
 				return send_json_error(api, 400, // 400 Bad Request
-										"bad_request",
-										"Newlines and carriage returns are not allowed in any input",
-										it->valuestring);
-			}		
+				                       "bad_request",
+				                       "Newlines and carriage returns are not allowed in any input",
+				                       it->valuestring);
+			}
 
 			if(listtype == GRAVITY_DOMAINLIST_ALLOW_EXACT ||
 			   listtype == GRAVITY_DOMAINLIST_DENY_EXACT)
