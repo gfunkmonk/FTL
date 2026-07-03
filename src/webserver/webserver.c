@@ -777,6 +777,20 @@ void http_init(void)
 		strncpy(key, opt, key_len);
 		key[key_len] = '\0';
 
+		// Reject attempts to override the embedded web server's Lua
+		// options via advancedOpts. Pi-hole configures its own Lua
+		// handling internally, and options such as lua_background_script
+		// or lua_preload_file execute arbitrary code - allowing them here
+		// would turn this trusted-admin passthrough into a code execution
+		// vector (an authenticated user could point the web server at a
+		// script they control).
+		if(strncasecmp(key, "lua_", 4) == 0)
+		{
+			log_warn("Ignoring disallowed webserver.advancedOpts option \"%s\": lua_* options are not permitted", key);
+			free(key);
+			continue;
+		}
+
 		char *value = strdup(equal_sign + 1);
 		if (value == NULL) {
 			log_err("Failed to allocate memory for advanced webserver option value!");
