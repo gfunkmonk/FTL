@@ -932,8 +932,28 @@ static void format_ntp_message(char *plain, const int sizeof_plain, char *html, 
 	if(sizeof_html < 1 || html == NULL)
 		return;
 
-	if(snprintf(html, sizeof_html, "%s in NTP %s:<pre>%s</pre>", level, who, message) > sizeof_html)
+	char *escaped_level = escape_html(level);
+	char *escaped_who = escape_html(who);
+	char *escaped_message = escape_html(message);
+
+	// Return early if memory allocation failed
+	if(escaped_level == NULL || escaped_who == NULL || escaped_message == NULL)
+	{
+		if(escaped_level != NULL)
+			free(escaped_level);
+		if(escaped_who != NULL)
+			free(escaped_who);
+		if(escaped_message != NULL)
+			free(escaped_message);
+		return;
+	}
+
+	if(snprintf(html, sizeof_html, "%s in NTP %s:<pre>%s</pre>", escaped_level, escaped_who, escaped_message) > sizeof_html)
 		log_warn("format_ntp_message(): Buffer too small to hold HTML message, warning truncated");
+
+	free(escaped_level);
+	free(escaped_who);
+	free(escaped_message);
 }
 
 static void format_verify_message(char *plain, const int sizeof_plain, char *html, const int sizeof_html,
