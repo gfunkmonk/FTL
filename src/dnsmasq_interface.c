@@ -1162,8 +1162,10 @@ bool _FTL_new_query(const unsigned int flags, const char *name,
 
 	bool blockDomain = false;
 	// Check if this should be blocked only for active queries
-	// (skipped for internally generated ones, e.g., DNSSEC)
-	if(!internal_query && querytype != TYPE_NONE)
+	// (skipped for internally generated ones, e.g., DNSSEC). Guard against
+	// query == NULL, which the getQuery() re-fetch after find_mac() above
+	// may yield if SHM was remapped/recycled while we were unlocked.
+	if(query != NULL && !internal_query && querytype != TYPE_NONE)
 	{
 		PERF_START(_pcb);
 		blockDomain = FTL_check_blocking(domainString, query, client, domain, dns_cache_entry);
@@ -1171,7 +1173,8 @@ bool _FTL_new_query(const unsigned int flags, const char *name,
 	}
 
 	// Store query in database
-	query->flags.database.changed = true;
+	if(query != NULL)
+		query->flags.database.changed = true;
 
 	PERF_END(_pnq, PERF_STAT_NEW_QUERY);
 	// Release thread lock
