@@ -464,17 +464,25 @@ static void print_dhcp_offer(struct in_addr source, struct dhcp_packet_data *off
 				unsigned int n = 0;
 				for(unsigned int i = 1; n < optlen; i++)
 				{
-					// Extract destination descriptor
+					// Extract destination descriptor (prefix length)
 					unsigned char cidr = offer_packet->options[x+n++];
+
+					// Number of significant destination octets, i.e.
+					// ceil(cidr/8) = 0..4 bytes (RFC 3442)
+					const unsigned int width = (cidr + 7u) / 8u;
+					if(cidr > 32 || width > 4)
+						break; // invalid prefix length
+
+					// Ensure the significant destination octets and the
+					// trailing 4 router bytes are fully contained in this
+					// option before reading them, otherwise a malformed
+					// offer would make us read past the options buffer
+					if(n + width + 4u > optlen)
+						break;
+
 					unsigned char addr[4] = { 0 };
-					if(cidr > 0)
-						addr[0] = offer_packet->options[x+n++];
-					if(cidr > 8)
-						addr[1] = offer_packet->options[x+n++];
-					if(cidr > 16)
-						addr[2] = offer_packet->options[x+n++];
-					if(cidr > 24)
-						addr[3] = offer_packet->options[x+n++];
+					for(unsigned int k = 0; k < width; k++)
+						addr[k] = offer_packet->options[x+n++];
 
 					// Extract router address
 					unsigned char router[4] = { 0 };
