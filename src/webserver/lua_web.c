@@ -91,6 +91,8 @@ int request_handler(struct mg_connection *conn, void *cbdata)
 	{
 		const size_t hint_len = 38 + strlen(admin_api_uri) + 2*strlen(config.webserver.domain.v.s);
 		char *hint = calloc(hint_len, sizeof(char));
+		if(hint == NULL)
+			return send_http_internal_error(&api);
 		snprintf(hint, hint_len, "The API is hosted at %s/api, not %s%s",
 		         config.webserver.domain.v.s, config.webserver.domain.v.s, admin_api_uri);
 		hint[hint_len - 1u] = '\0';

@@ -259,6 +259,11 @@ static int redirect_lp_handler(struct mg_connection *conn, void *input)
 	//    (if present)
 	// Total bytes required: uri_len - 3 + query_len + 1 + 1
 	char *new_uri = calloc(uri_len + query_len - 1, sizeof(char));
+	if(new_uri == NULL)
+	{
+		mg_send_http_error(conn, 500, "Internal Server Error");
+		return 500;
+	}
 
 	// Copy everything from before the ".lp" to the new URI to effectively
 	// remove it

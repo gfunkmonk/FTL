@@ -837,9 +837,9 @@ bool read_teleporter_zip_from_disk(const char *filename)
 	fseek(fp, 0, SEEK_END);
 	const size_t size = (size_t)ftell(fp);
 	fseek(fp, 0, SEEK_SET);
-	if(size > MAX_TELEPORTER_ZIP_SIZE)
+	if(size == 0 || size > MAX_TELEPORTER_ZIP_SIZE)
 	{
-		log_err("ZIP archive %s is too large (%zu bytes, max. %zu bytes)",
+		log_err("ZIP archive %s has an invalid size (%zu bytes, max. %zu bytes)",
 		        filename, size, MAX_TELEPORTER_ZIP_SIZE);
 		fclose(fp);
 		return false;
@@ -847,6 +847,12 @@ bool read_teleporter_zip_from_disk(const char *filename)
 
 	// Read ZIP archive to memory
 	void *ptr = calloc(size, sizeof(char));
+	if(ptr == NULL)
+	{
+		log_err("Failed to allocate %zu bytes for ZIP archive", size);
+		fclose(fp);
+		return false;
+	}
 	if(fread(ptr, 1, size, fp) != size)
 	{
 		log_err("Failed to read %zu bytes from %s: %s",

@@ -518,6 +518,10 @@ const char * __attribute__((const)) get_http_method_str(const enum http_method m
 
 void read_and_parse_payload(struct ftl_conn *api)
 {
+	// Defense in depth: never operate on an unallocated payload buffer
+	if(api->payload.raw == NULL)
+		return;
+
 	// Read payload
 	api->payload.size = mg_read(api->conn, api->payload.raw, MAX_PAYLOAD_BYTES - 1);
 	if (api->payload.size < 1)
