@@ -167,7 +167,7 @@ static int redirect_root_handler(struct mg_connection *conn, void *input)
 	// (e.g. host "pi" incorrectly matching domain "pi.hole").
 	const size_t domain_len = strlen(config.webserver.domain.v.s);
 	if(host != NULL && host_len == domain_len &&
-	   strncmp(host, config.webserver.domain.v.s, host_len) == 0)
+	   strncasecmp(host, config.webserver.domain.v.s, host_len) == 0)
 	{
 		// 308 Permanent Redirect from http://pi.hole -> http://pi.hole/admin/
 		if(strcmp(uri, "/") == 0 || strcmp(uri, config.webserver.paths.prefix.v.s) == 0)
