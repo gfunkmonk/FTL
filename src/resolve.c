@@ -38,7 +38,7 @@
 
 // Function Prototypes
 static size_t nameToDNS(unsigned char *dns, const size_t dnslen, const char *host, const size_t hostlen) __attribute__((nonnull(1,3)));
-static unsigned char *nameFromDNS(unsigned char *reader, unsigned char *buffer, uint16_t *count) __attribute__((malloc)) __attribute__((nonnull(1,2,3)));
+static unsigned char *nameFromDNS(unsigned char *reader, unsigned char *buffer, const unsigned char *end, uint16_t *count) __attribute__((malloc)) __attribute__((nonnull(1,2,3,4)));
 
 // Avoid "error: packed attribute causes inefficient alignment for ..." on ARM32
 // builds due to the use of __attribute__((packed)) in the following structs
@@ -432,16 +432,42 @@ static bool ngethostbyname(const int sock, const bool tcp, struct sockaddr_in *d
 	uint16_t stop = 0;
 	bool have_name = false;
 	struct RES_RECORD answers[20] = { 0 };
+	const unsigned char *bufend = buf + sizeof(buf);
 	for(uint16_t i = 0; i < min(ntohs(dns.ans_count), ArraySize(answers)); i++)
 	{
-		answers[i].name = nameFromDNS(reader, buf, &stop);
+		// Ensure the read pointer still points within the receive
+		// buffer before parsing the next answer's name
+		if(reader < buf || reader >= bufend)
+			break;
+
+		answers[i].name = nameFromDNS(reader, buf, bufend, &stop);
+		if(answers[i].name == NULL)
+			break;
 		reader = reader + stop;
+
+		// The fixed-size resource record header must fit entirely
+		// within the receive buffer before we cast and dereference it
+		if(reader < buf || reader + sizeof(struct R_DATA) > bufend)
+		{
+			free(answers[i].name);
+			break;
+		}
 
 		answers[i].resource = (struct R_DATA*)(reader);
 		reader = reader + sizeof(struct R_DATA);
 
 		// Read the answer and convert from network to host representation
-		answers[i].rdata = nameFromDNS(reader, buf, &stop);
+		if(reader < buf || reader >= bufend)
+		{
+			free(answers[i].name);
+			break;
+		}
+		answers[i].rdata = nameFromDNS(reader, buf, bufend, &stop);
+		if(answers[i].rdata == NULL)
+		{
+			free(answers[i].name);
+			break;
+		}
 		reader = reader + stop;
 
 		// We only care about PTR answers and ignore all others
@@ -494,7 +520,7 @@ static bool ngethostbyname(const int sock, const bool tcp, struct sockaddr_in *d
 // Convert hostname from network to host representation
 // This routine supports DNS compression pointers
 // 3www6google3com -> www.google.com
-static u_char * __attribute__((malloc)) __attribute__((nonnull(1,2,3))) nameFromDNS(unsigned char *reader, unsigned char *buffer, uint16_t *count)
+static u_char * __attribute__((malloc)) __attribute__((nonnull(1,2,3,4))) nameFromDNS(unsigned char *reader, unsigned char *buffer, const unsigned char *end, uint16_t *count)
 {
 	const size_t MAXNAMELEN = 256;
 	unsigned char *name = calloc(MAXNAMELEN, sizeof(char));
@@ -515,10 +541,17 @@ static u_char * __attribute__((malloc)) __attribute__((nonnull(1,2,3))) nameFrom
 	// Instead, each label is preceded by a byte containing its length, and
 	// the name is terminated by a zero-length label representing the root
 	// zone.
-	while(*reader != 0 && p < MAXNAMELEN - 2)
+	while(reader < end && *reader != 0 && p < MAXNAMELEN - 2)
 	{
 		if(*reader >= 0xC0)
 		{
+			// A compression pointer is two bytes; the second byte
+			// must also lie within the buffer before we dereference it
+			if(reader + 1 >= end)
+			{
+				free(name);
+				return NULL;
+			}
 			// RFC 1035, Section 4.1.4: Message compression
 			//
 			// A label can be up to 63 bytes long; if the length
