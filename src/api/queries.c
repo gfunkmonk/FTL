@@ -182,6 +182,11 @@ int api_queries_suggestions(struct ftl_conn *api)
 #define JOINSTR "JOIN client_by_id c ON q.client = c.id JOIN domain_by_id d ON q.domain = d.id LEFT JOIN forward_by_id f ON q.forward = f.id LEFT JOIN addinfo_by_id a ON a.id = q.additional_info"
 #define QUERYSTRBUFFERLEN 4096
 
+// Hard upper bound on the number of query rows materialized into a single
+// JSON response. This prevents /api/queries from exhausting memory by
+// building the entire (in-memory or on-disk) query history as one document.
+#define API_QUERIES_MAX_ROWS 10000
+
 static void add_querystr_string(struct ftl_conn *api, char *querystr, const char *sql, const char *val, bool *where)
 {
 	const size_t strpos = strlen(querystr);
@@ -403,6 +408,15 @@ int api_queries(struct ftl_conn *api)
 		// Does the user request a non-default number of replies?
 		// Note: We do not accept zero query requests here
 		get_int_var(api->request->query_string, "length", &length);
+
+		// Enforce a hard upper bound on the number of rows materialized into
+		// the JSON response to prevent memory-exhaustion DoS. This cap applies
+		// regardless of disk=true and regardless of the requested length.
+		// Deliberate, documented behavior change: the length <= 0 ("all") case
+		// is limited to the cap as well, so "all" now means "all up to
+		// API_QUERIES_MAX_ROWS".
+		if(length <= 0 || length > API_QUERIES_MAX_ROWS)
+			length = API_QUERIES_MAX_ROWS;
 
 		// Does the user request an offset from the cursor?
 		get_uint_var(api->request->query_string, "start", &start);
