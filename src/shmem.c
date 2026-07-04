@@ -392,15 +392,29 @@ size_t _addstr(const char *input, const char *func, const int line, const char *
 	{
 		return 0;
 	}
-	else if(len > (size_t)(pagesize-1))
+
+	// If the string pool is (near) full, we cannot store anything anymore.
+	// Bail out before evaluating avail_mem - 1 below, which would otherwise
+	// underflow. Returning 0 aliases the empty-string sentinel, consistent
+	// with the len == 1 case above.
+	if(avail_mem < 2)
+	{
+		log_warn("Cannot store string \"%s\": string pool is full", input);
+		return 0;
+	}
+
+	// Clamp the length so the strncpy() further down can never write out of
+	// bounds. Both limits are applied independently so the final len is always
+	// <= avail_mem - 1, even when the pagesize limit triggers first.
+	if(len > (size_t)(pagesize-1))
 	{
 		log_warn("Shortening too long string (len %zu > pagesize %u)", len, pagesize);
 		len = pagesize;
 	}
-	else if(len > (size_t)(avail_mem-1))
+	if(len > (size_t)(avail_mem-1))
 	{
 		log_warn("Shortening too long string (len %zu > available memory %zu)", len, avail_mem);
-		len = avail_mem;
+		len = avail_mem - 1;
 	}
 
 	// Ensure our hash table covers any strings added by other processes
@@ -429,6 +443,12 @@ size_t _addstr(const char *input, const char *func, const int line, const char *
 
 	// Copy the C string pointed by input into the shared string buffer
 	strncpy(&((char*)shm_strings.ptr)[shmSettings->next_str_pos], input, len);
+
+	// Force NUL termination of the last byte. This is a no-op for untruncated
+	// strings (strncpy already copied the terminator) but guarantees that
+	// truncated strings are terminated, preventing reads past the mapping and
+	// accidental merging of adjacent strings.
+	((char*)shm_strings.ptr)[shmSettings->next_str_pos + len - 1] = '\0';
 
 	// Record the new string's position before advancing the pointer
 	const size_t new_offset = shmSettings->next_str_pos;
