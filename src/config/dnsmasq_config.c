@@ -91,14 +91,19 @@ static bool test_dnsmasq_config(char errbuf[ERRBUF_SIZE])
 		if(errbuf != NULL)
 		{
 			// We are only interested in the last pipe line
-			while(read(pipefd[0], errbuf, ERRBUF_SIZE) > 0)
+			ssize_t nread;
+			while((nread = read(pipefd[0], errbuf, ERRBUF_SIZE - 1)) > 0)
 			{
+				// NUL-terminate what we just read so the string
+				// operations below cannot read past the buffer
+				errbuf[nread] = '\0';
 				// Remove initial newline character (if present)
 				if(errbuf[0] == '\n')
-					memmove(errbuf, &errbuf[1], ERRBUF_SIZE-1);
-				// Strip newline character (if present)
-				if(errbuf[strlen(errbuf)-1] == '\n')
-					errbuf[strlen(errbuf)-1] = '\0';
+					memmove(errbuf, &errbuf[1], (size_t)nread);
+				// Strip trailing newline character (if present)
+				const size_t len = strlen(errbuf);
+				if(len > 0 && errbuf[len - 1] == '\n')
+					errbuf[len - 1] = '\0';
 				// Replace any possible internal newline characters by spaces
 				char *ptr = errbuf;
 				while((ptr = strchr(ptr, '\n')) != NULL)
