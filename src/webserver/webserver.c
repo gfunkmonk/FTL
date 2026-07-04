@@ -160,10 +160,14 @@ static int redirect_root_handler(struct mg_connection *conn, void *input)
 		log_debug(DEBUG_API, "URI: %s", uri);
 	}
 
-	// Check if the requested host is the configured (defaulting to pi.hole)
-	// Do not redirect if the host is anything else, e.g. localhost or a
-	// blocked domain in IP blocking mode
-	if(host != NULL && strncmp(host, config.webserver.domain.v.s, host_len) == 0)
+	// Check if the requested host is the configured domain (defaulting to pi.hole).
+	// Do not redirect if the host is anything else, e.g. a blocked domain in
+	// IP blocking mode where the browser connects using the blocked hostname.
+	// Use an exact-length comparison to prevent a prefix-match false positive
+	// (e.g. host "pi" incorrectly matching domain "pi.hole").
+	const size_t domain_len = strlen(config.webserver.domain.v.s);
+	if(host != NULL && host_len == domain_len &&
+	   strncasecmp(host, config.webserver.domain.v.s, host_len) == 0)
 	{
 		// 308 Permanent Redirect from http://pi.hole -> http://pi.hole/admin/
 		if(strcmp(uri, "/") == 0 || strcmp(uri, config.webserver.paths.prefix.v.s) == 0)
@@ -175,8 +179,11 @@ static int redirect_root_handler(struct mg_connection *conn, void *input)
 		}
 	}
 
-	// else: Not redirecting
-	log_debug(DEBUG_API, "Not redirecting %s", uri);
+	// Host did not match webserver.domain — not redirecting. When deployed
+	// behind a reverse proxy, ensure webserver.domain matches the Host header
+	// the proxy forwards (configure via WEBSERVER_DOMAIN in pihole.toml).
+	log_debug(DEBUG_API, "Not redirecting %s (Host: \"%.*s\" != domain: \"%s\")",
+	          uri, (int)host_len, host ? host : "", config.webserver.domain.v.s);
 	return 0;
 }
 
