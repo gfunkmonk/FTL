@@ -881,6 +881,7 @@ static int process_received_tar_gz(struct ftl_conn *api, struct upload_data *dat
 	}
 
 	// Free allocated memory
+	free(archive);
 	free_upload_data(data);
 
 	// Migrate the config to v6
