@@ -1081,6 +1081,29 @@ class TestQueriesAdditional:
         data = _j(api_session.get(f"{FTL_URL}/api/queries?length=5", timeout=5))
         assert len(data["queries"]) == 5
 
+    def test_queries_length_is_capped(self, api_session):
+        """Regression: an unbounded 'length' must not build the whole history.
+
+        /api/queries caps the number of rows materialized at
+        API_QUERIES_MAX_ROWS (10000) regardless of the requested length,
+        including the documented length<=0 ("all") case. The fixed test
+        database holds far fewer rows than the cap, so this exercises the
+        clamp's contract - a huge or negative length is accepted, saturated,
+        and never rejected or overflowed - rather than the 10000-row boundary
+        itself.
+        """
+        CAP = 10000
+        # A huge length must be accepted (not rejected) and stay bounded
+        huge = _j(api_session.get(f"{FTL_URL}/api/queries?length=999999999", timeout=10))
+        assert len(huge["queries"]) <= CAP
+        # length=-1 is the documented "all"; it must still return everything
+        all_rows = _j(api_session.get(f"{FTL_URL}/api/queries?length=-1", timeout=10))
+        assert len(all_rows["queries"]) <= CAP
+        # An oversized length saturates to the same bounded result as "all" ...
+        assert len(huge["queries"]) == len(all_rows["queries"])
+        # ... which, below the cap, is the full unfiltered history
+        assert len(all_rows["queries"]) == all_rows["recordsTotal"]
+
     def test_queries_filter_by_type(self, api_session):
         data = _j(api_session.get(f"{FTL_URL}/api/queries?type=AAAA", timeout=5))
         for q in data["queries"]:
