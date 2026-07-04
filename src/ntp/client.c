@@ -684,8 +684,10 @@ bool ntp_client(const char *server, const bool settime, const bool print)
 	ntp_root_dispersion = D2FP(theta_stdev);
 
 	// Offset and delay larger than ACCURACY seconds are considered as invalid
-	// during local testing (e.g., when the server is on the same machine)
-	return theta_trim < ACCURACY && delta_trim < ACCURACY;
+	// during local testing (e.g., when the server is on the same machine).
+	// The offset is signed, so compare its magnitude - a large negative
+	// offset is just as inaccurate as a large positive one.
+	return fabs(theta_trim) < ACCURACY && delta_trim < ACCURACY;
 }
 
 static void *ntp_client_thread(void *arg)
