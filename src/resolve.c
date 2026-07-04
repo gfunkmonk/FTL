@@ -391,8 +391,10 @@ static bool ngethostbyname(const int sock, const bool tcp, struct sockaddr_in *d
 		}
 		prefix = ntohs(prefix);
 
-		// Sanity check the length of the message
-		if(prefix > sizeof(buf))
+		// Sanity check the length of the message. Reject prefix == sizeof(buf)
+		// as well, otherwise the bzero(buf, prefix + 1) below writes one byte
+		// past the end of the buffer.
+		if(prefix >= sizeof(buf))
 		{
 			log_err("Received TCP DNS reply is too long (%u bytes)", prefix);
 			log_resolve_info(host, config.dns.port.v.u16, tcp);
