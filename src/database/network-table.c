@@ -821,9 +821,12 @@ static bool add_FTL_clients_to_network_table(sqlite3 *db, const enum arp_status 
 
 		// Get hostname and IP address of this client
 		char hostname[MAXHOSTNAMELEN], ipaddr[INET6_ADDRSTRLEN], interface[MAXIFACESTRLEN];
-		strncpy(ipaddr, getstr(client->ippos), sizeof(ipaddr));
-		strncpy(hostname, getstr(client->namepos), sizeof(hostname));
-		strncpy(interface, getstr(client->ifacepos), sizeof(interface));
+		strncpy(ipaddr, getstr(client->ippos), sizeof(ipaddr) - 1);
+		ipaddr[sizeof(ipaddr) - 1] = '\0';
+		strncpy(hostname, getstr(client->namepos), sizeof(hostname) - 1);
+		hostname[sizeof(hostname) - 1] = '\0';
+		strncpy(interface, getstr(client->ifacepos), sizeof(interface) - 1);
+		interface[sizeof(interface) - 1] = '\0';
 
 		// Skip if already handled above (first check against clients_array_size as we might have added
 		// more clients to FTL's memory herein (those known only from the database))
