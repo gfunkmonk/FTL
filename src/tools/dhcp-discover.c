@@ -353,7 +353,9 @@ static void print_dhcp_offer(struct in_addr source, struct dhcp_packet_data *off
 			else if(opttab[i].size & OT_TIME)
 			{
 				uint32_t time = 0;
-				memcpy(&time, &offer_packet->options[x], sizeof(time));
+				// Copy at most the advertised option length so a
+				// short/truncated option cannot read past the buffer
+				memcpy(&time, &offer_packet->options[x], optlen < sizeof(time) ? optlen : sizeof(time));
 				time = ntohl(time);
 				const char *optname = opttab[i].name;
 				// Some timers deserve a more user-friendly name
@@ -439,12 +441,16 @@ static void print_dhcp_offer(struct in_addr source, struct dhcp_packet_data *off
 			}
 			else if(opttype == 158) // DHCPv4 PCP Option (RFC 7291)
 			{                       // https://tools.ietf.org/html/rfc7291#section-4
+				if(optlen < 1)
+					break;
 				uint16_t list_length = offer_packet->options[x++] / 4; // 4 bytes per list entry
 				// Loop over IPv4 lists
 				for(unsigned int n = 0; n < list_length; n++)
 				{
 					struct in_addr addr_list = { 0 };
-					if(optlen < (n+1)*sizeof(addr_list.s_addr))
+					// The list-length byte above consumed one byte, so
+					// only optlen-1 bytes of address data remain
+					if(optlen < 1 + (n+1)*sizeof(addr_list.s_addr))
 						break;
 					memcpy(&addr_list.s_addr, &offer_packet->options[x+n*sizeof(addr_list.s_addr)], sizeof(addr_list.s_addr));
 					if(n > 0)
