@@ -1036,8 +1036,12 @@ char *__attribute__ ((malloc)) get_client_names_from_ids(const char *group_ids)
 
 	log_debug(DEBUG_DATABASE, "Querying group names for IDs (%s)", group_ids);
 
-	// Prepare query
-	int rc = sqlite3_prepare_v2(gravity_db, querystr, -1, &table_stmt, NULL);
+	// Prepare query. Use a dedicated statement instead of the shared
+	// thread-local table_stmt: our caller get_client_groupids() still has
+	// its own table_stmt query open when it calls us, so reusing it would
+	// leak that statement and clobber the shared pointer.
+	sqlite3_stmt *stmt = NULL;
+	int rc = sqlite3_prepare_v2(gravity_db, querystr, -1, &stmt, NULL);
 	if(rc != SQLITE_OK){
 		log_err("get_client_groupids(%s) - SQL error prepare: %s",
 		        querystr, sqlite3_errstr(rc));
@@ -1047,11 +1051,11 @@ char *__attribute__ ((malloc)) get_client_names_from_ids(const char *group_ids)
 
 	// Perform query
 	char *result = NULL;
-	rc = sqlite3_step(table_stmt);
+	rc = sqlite3_step(stmt);
 	if(rc == SQLITE_ROW)
 	{
 		// There is a record for this client in the database
-		result = strdup((const char*)sqlite3_column_text(table_stmt, 0));
+		result = strdup((const char*)sqlite3_column_text(stmt, 0));
 		if(result == NULL)
 			result = strdup("N/A");
 	}
@@ -1065,12 +1069,12 @@ char *__attribute__ ((malloc)) get_client_names_from_ids(const char *group_ids)
 	{
 		log_err("group_names(%s) - SQL error step: %s",
 		        querystr, sqlite3_errstr(rc));
-		gravityDB_finalizeTable();
+		sqlite3_finalize(stmt);
 		free(querystr);
 		return strdup("N/A");
 	}
 	// Finalize statement
-	gravityDB_finalizeTable();
+	sqlite3_finalize(stmt);
 	free(querystr);
 	return result;
 }
