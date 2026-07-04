@@ -755,6 +755,10 @@ static size_t resolveAndAddHostname(const int udp_sock, struct sockaddr_in *dest
 	{
 		log_debug(DEBUG_RESOLVER, " ---> \"\" (configured to not resolve host name)");
 
+		// Not resolving names is intentional, not a failure
+		if(success != NULL)
+			*success = true;
+
 		// Return fixed position of empty string
 		return 0;
 	}
@@ -786,6 +790,11 @@ static size_t resolveAndAddHostname(const int udp_sock, struct sockaddr_in *dest
 		if(getNameFromIP(NULL, newname, ipaddr))
 			log_debug(DEBUG_RESOLVER, " ---> \"%s\" (provided by database)", newname);
 	}
+
+	// Report whether we actually obtained a host name so the caller can
+	// keep the old name and retry later when resolution failed
+	if(success != NULL)
+		*success = newname[0] != '\0';
 
 	// Only store new newname if it is valid and differs from oldname
 	// We do not need to check for oldname == NULL as names are
