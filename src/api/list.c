@@ -435,6 +435,8 @@ static int api_list_write(struct ftl_conn *api,
 					if (rc != IDN2_OK)
 					{
 						// Invalid domain name
+						if(allocated_json)
+							cJSON_Delete(row.items);
 						return send_json_error(api, 400,
 						                       "bad_request",
 						                       "Invalid request: Invalid domain name",
