@@ -703,8 +703,17 @@ static void format_dnsmasq_warn_message(char *plain, const int sizeof_plain, cha
 	if(sizeof_html < 1 || html == NULL)
 		return;
 
-	if(snprintf(html, sizeof_html, "<code>dnsmasq</code> warning:<pre>%s</pre>Check out <a href=\"https://docs.pi-hole.net/ftldns/dnsmasq_warn/\" target=\"_blank\">our documentation</a> for further information.", message) > sizeof_html)
+	// Escape the warning text before embedding it into HTML, matching the
+	// other renderers - the dnsmasq message is untrusted and would
+	// otherwise allow stored HTML/script injection in the admin interface
+	char *escaped_message = escape_html(message);
+	if(escaped_message == NULL)
+		return;
+
+	if(snprintf(html, sizeof_html, "<code>dnsmasq</code> warning:<pre>%s</pre>Check out <a href=\"https://docs.pi-hole.net/ftldns/dnsmasq_warn/\" target=\"_blank\">our documentation</a> for further information.", escaped_message) > sizeof_html)
 		log_warn("format_dnsmasq_warn_message(): Buffer too small to hold HTML message, warning truncated");
+
+	free(escaped_message);
 }
 
 static void format_load_message(char *plain, const int sizeof_plain, char *html, const int sizeof_html, const double load, const int nprocs)
