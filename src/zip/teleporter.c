@@ -315,18 +315,26 @@ static const char *test_and_import_pihole_toml(void *ptr, size_t size, char * co
 	struct config teleporter_config = { 0 };
 	duplicate_config(&teleporter_config, &config);
 	if(!readFTLtoml(NULL, &teleporter_config, toml.toptab, true, NULL, 0, true))
+	{
+		free_config(&teleporter_config, false);
+		toml_free(toml);
 		return "File etc/pihole/pihole.toml in ZIP archive contains invalid TOML configuration";
+	}
 
 	// Test dnsmasq config in the imported configuration
 	// The dnsmasq configuration will be overwritten if the test succeeds
 	if(!write_dnsmasq_config(&teleporter_config, true, hint))
+	{
+		free_config(&teleporter_config, false);
+		toml_free(toml);
 		return "File etc/pihole/pihole.toml in ZIP archive contains invalid dnsmasq configuration";
+	}
 
 	// When we reach this point, we know that the file is a valid TOML file and contains
 	// a valid configuration for Pi-hole. We can now safely overwrite the current
 	// configuration with the one from the ZIP archive
 
-	// Install new configuration
+	// Install new configuration (takes ownership of teleporter_config)
 	replace_config(&teleporter_config);
 
 	// Write new pihole.toml to disk, the dnsmaq config was already written above
@@ -335,6 +343,7 @@ static const char *test_and_import_pihole_toml(void *ptr, size_t size, char * co
 	writeFTLtoml(true, NULL);
 	write_custom_list();
 
+	toml_free(toml);
 	return NULL;
 }
 
