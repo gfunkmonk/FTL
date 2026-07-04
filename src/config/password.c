@@ -798,6 +798,7 @@ bool create_cli_password(void)
 	{
 		log_err("Failed to open CLI password file for writing: %s", strerror(errno));
 		free(cli_password);
+		cli_password = NULL;
 		return false;
 	}
 
@@ -807,6 +808,7 @@ bool create_cli_password(void)
 		log_err("Failed to write CLI password to file: %s", strerror(errno));
 		fclose(file);
 		free(cli_password);
+		cli_password = NULL;
 		return false;
 	}
 
@@ -818,6 +820,7 @@ bool create_cli_password(void)
 	{
 		log_err("Failed to set permissions on CLI password file: %s", strerror(errno));
 		free(cli_password);
+		cli_password = NULL;
 		return false;
 	}
 
