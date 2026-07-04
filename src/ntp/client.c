@@ -726,8 +726,11 @@ static void *ntp_client_thread(void *arg)
 			restart_ftl("System time updated");
 		}
 
-		// Calculate time to sleep
-		unsigned int sleep_time = config.ntp.sync.interval.v.ui - (unsigned int)time_delta;
+		// Calculate time to sleep. Clamp to zero when the sync itself took
+		// longer than the configured interval, otherwise the unsigned
+		// subtraction would underflow into an effectively infinite sleep.
+		const unsigned int interval = config.ntp.sync.interval.v.ui;
+		unsigned int sleep_time = time_delta >= interval ? 0 : interval - (unsigned int)time_delta;
 
 		// Set first run to false
 		first_run = false;
