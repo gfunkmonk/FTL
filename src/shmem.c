@@ -150,6 +150,35 @@ static unsigned int pagesize;
 static unsigned int local_shm_counter = 0;
 static pid_t shmem_pid = 0;
 static size_t used_shmem = 0u;
+
+// Cached PID/TID of the current process/thread. The SHM lock owner is recorded
+// on every lock acquisition, but getpid() and gettid() are syscalls that musl
+// (which the shipped binary uses) does not cache, so this avoids two syscalls
+// per lock. The cache is reset after a real fork() via reset_lock_owner_cache()
+// so a forked TCP worker or the daemonized process never reports stale IDs
+// (a value of 0 means "not yet computed"; neither PID nor TID is ever 0).
+static pid_t cached_pid = 0;
+static _Thread_local pid_t cached_tid = 0;
+static inline pid_t cached_getpid(void)
+{
+	if(cached_pid == 0)
+		cached_pid = getpid();
+	return cached_pid;
+}
+static inline pid_t cached_gettid(void)
+{
+	if(cached_tid == 0)
+		cached_tid = gettid();
+	return cached_tid;
+}
+void reset_lock_owner_cache(void)
+{
+	// Force recomputation on next use. Called by the child after fork() as
+	// fork() duplicates both the process (stale PID) and the calling thread's
+	// thread-local storage (stale TID).
+	cached_pid = 0;
+	cached_tid = 0;
+}
 static size_t get_optimal_object_size(const size_t objsize, const size_t minsize);
 
 // Minimum / initial capacity of the string hash table (must be power of 2)
@@ -651,8 +680,8 @@ void _lock_shm(const char *func, const int line, const char *file)
 	}
 
 	// Store lock owner after lock has been acquired and was made consistent (if required)
-	shmLock->owner.pid = getpid();
-	shmLock->owner.tid = gettid();
+	shmLock->owner.pid = cached_getpid();
+	shmLock->owner.tid = cached_gettid();
 
 	// Check if this process needs to remap the shared memory objects
 	if(shmSettings != NULL &&
@@ -729,8 +758,8 @@ void _unlock_shm(const char *func, const int line, const char * file)
 // Return if we locked this mutex (PID and TID match)
 bool is_our_lock(void)
 {
-	if(shmLock->owner.pid == getpid() &&
-	   shmLock->owner.tid == gettid())
+	if(shmLock->owner.pid == cached_getpid() &&
+	   shmLock->owner.tid == cached_gettid())
 		return true;
 	return false;
 }

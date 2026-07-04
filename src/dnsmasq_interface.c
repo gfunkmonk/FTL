@@ -3864,6 +3864,11 @@ void FTL_TCP_worker_created(const int confd)
 		return;
 	}
 
+	// This runs in the freshly forked TCP worker process. Drop the cached
+	// lock-owner PID/TID inherited from the parent before we take any SHM
+	// lock, otherwise is_our_lock() would compare against the parent's IDs.
+	reset_lock_owner_cache();
+
 	// Print this if debugging is enabled
 	if(config.debug.queries.v.b)
 	{
