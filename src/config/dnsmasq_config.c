@@ -90,26 +90,31 @@ static bool test_dnsmasq_config(char errbuf[ERRBUF_SIZE])
 		// Read readirected STDERR until EOF
 		if(errbuf != NULL)
 		{
-			// We are only interested in the last pipe line
+			// dnsmasq may deliver its output in several reads (observed on
+			// slower architectures such as RISC-V). We are only interested
+			// in the last pipe line, but reading one chunk at a time and
+			// keeping the last read would let a trailing read (e.g. a lone
+			// newline) discard the meaningful error captured earlier and
+			// leave an empty message. Accumulate everything first, then keep
+			// the last non-empty line.
+			size_t total = 0;
 			ssize_t nread;
-			while((nread = read(pipefd[0], errbuf, ERRBUF_SIZE - 1)) > 0)
-			{
-				// NUL-terminate what we just read so the string
-				// operations below cannot read past the buffer
-				errbuf[nread] = '\0';
-				// Remove initial newline character (if present)
-				if(errbuf[0] == '\n')
-					memmove(errbuf, &errbuf[1], (size_t)nread);
-				// Strip trailing newline character (if present)
-				const size_t len = strlen(errbuf);
-				if(len > 0 && errbuf[len - 1] == '\n')
-					errbuf[len - 1] = '\0';
-				// Replace any possible internal newline characters by spaces
-				char *ptr = errbuf;
-				while((ptr = strchr(ptr, '\n')) != NULL)
-					*ptr = ' ';
-				log_debug(DEBUG_CONFIG, "dnsmasq pipe: %s", errbuf);
-			}
+			while(total < ERRBUF_SIZE - 1 &&
+			      (nread = read(pipefd[0], errbuf + total, ERRBUF_SIZE - 1 - total)) > 0)
+				total += (size_t)nread;
+			errbuf[total] = '\0';
+
+			// Strip trailing newline characters
+			while(total > 0 && errbuf[total - 1] == '\n')
+				errbuf[--total] = '\0';
+
+			// Keep only the last line: drop everything up to and including
+			// the last remaining newline
+			char *last = strrchr(errbuf, '\n');
+			if(last != NULL)
+				memmove(errbuf, last + 1, strlen(last + 1) + 1);
+
+			log_debug(DEBUG_CONFIG, "dnsmasq pipe: %s", errbuf);
 		}
 
 		// Wait until child has exited to get its return code
