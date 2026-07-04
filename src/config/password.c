@@ -430,9 +430,14 @@ enum password_result verify_password(const char *password, const char *pwhash, c
 	if(password == NULL || password[0] == '\0')
 		return PASSWORD_INCORRECT;
 
-	// Check if there has already been one login attempt within this second
+	// Check if there has already been one login attempt within this second.
+	// verify_password() runs concurrently from multiple webserver worker
+	// threads, so the shared counters must be guarded by a mutex to keep
+	// the rate limit effective.
+	static pthread_mutex_t rate_limit_lock = PTHREAD_MUTEX_INITIALIZER;
 	static time_t last_password_attempt = 0;
 	static unsigned int num_password_attempts = 0;
+	pthread_mutex_lock(&rate_limit_lock);
 	if(rate_limiting &&
 	   last_password_attempt > 0 &&
 	   last_password_attempt == time(NULL))
@@ -441,6 +446,7 @@ enum password_result verify_password(const char *password, const char *pwhash, c
 		if(++num_password_attempts > MAX_PASSWORD_ATTEMPTS_PER_SECOND)
 		{
 			// Rate limit reached
+			pthread_mutex_unlock(&rate_limit_lock);
 			sleepms(250);
 			return PASSWORD_RATE_LIMITED;
 		}
@@ -451,6 +457,7 @@ enum password_result verify_password(const char *password, const char *pwhash, c
 		num_password_attempts = 1;
 		last_password_attempt = time(NULL);
 	}
+	pthread_mutex_unlock(&rate_limit_lock);
 
 	// Check password hash format
 	if(pwhash[0] == '$')
