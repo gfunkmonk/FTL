@@ -490,7 +490,9 @@ int api_queries(struct ftl_conn *api)
 				char search_col_id_str[32] = { 0 };
 				if(GET_VAR(search_col_id, search_col_id_str, api->request->query_string) > 0)
 				{
-					size_t searchlen = min(strlen(search[j]), sizeof(search[j]) - 2);
+					// Leave room for a leading and a trailing wildcard
+					// plus the terminating NUL that are added below
+					size_t searchlen = min(strlen(search[j]), sizeof(search[j]) - 3);
 
 					// Replace "*" by SQLite3 wildcard character "%"
 					for(unsigned int i = 0; i < searchlen; i++)
