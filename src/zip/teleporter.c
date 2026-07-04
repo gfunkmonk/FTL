@@ -599,6 +599,16 @@ const char *read_teleporter_zip(uint8_t *buffer, const size_t buflen, char * con
 			continue;
 		}
 
+		// Reject an absurdly large (attacker-controlled) uncompressed size
+		// before allocating, to avoid a memory-exhaustion DoS. This matches
+		// the 256 MiB cap enforced on the gzip path.
+		if(file_stat.m_uncomp_size > 0x10000000)
+		{
+			log_warn("Skipping file %u (%s) in ZIP archive: uncompressed size %llu is too large",
+			         i, file_stat.m_filename, (unsigned long long)file_stat.m_uncomp_size);
+			continue;
+		}
+
 		// Read file into its dedicated memory buffer
 		void *ptr = malloc(file_stat.m_uncomp_size);
 		if(ptr == NULL)
