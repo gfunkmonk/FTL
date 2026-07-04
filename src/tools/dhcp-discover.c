@@ -636,7 +636,9 @@ static unsigned int get_dhcp_offer(const int sock, const uint32_t xid, const cha
 		printf("  BOOTP server: ");
 		if(offer_packet.sname[0] != 0)
 		{
-			size_t len = strlen(offer_packet.sname);
+			// sname is a fixed-size field that a malicious OFFER may
+			// leave unterminated, so bound the length to the field size
+			size_t len = strnlen(offer_packet.sname, sizeof(offer_packet.sname));
 			char *buffer = escape_data(offer_packet.sname, len);
 			printf("%s\n", buffer);
 			free(buffer);
@@ -647,7 +649,9 @@ static unsigned int get_dhcp_offer(const int sock, const uint32_t xid, const cha
 		printf("  BOOTP file: ");
 		if(offer_packet.file[0] != 0)
 		{
-			size_t len = strlen(offer_packet.file);
+			// file is a fixed-size field that a malicious OFFER may
+			// leave unterminated, so bound the length to the field size
+			size_t len = strnlen(offer_packet.file, sizeof(offer_packet.file));
 			char *buffer = escape_data(offer_packet.file, len);
 			printf("%s\n", buffer);
 			free(buffer);
