@@ -502,8 +502,10 @@ int api_queries(struct ftl_conn *api)
 					}
 
 					// Add % at the end of the search string to
-					// make it a wildcard if there is none
-					if(search[j][searchlen - 1] != '%')
+					// make it a wildcard if there is none. Guard against
+					// searchlen == 0 (empty value), which would make
+					// searchlen - 1 underflow into an out-of-bounds read.
+					if(searchlen == 0 || search[j][searchlen - 1] != '%')
 					{
 						search[j][searchlen] = '%';
 						search[j][searchlen + 1] = '\0';
