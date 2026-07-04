@@ -489,7 +489,7 @@ void readTOMLvalue(struct conf_item *conf_item, const char* key, toml_datum_t to
 		case CONF_UINT:
 		{
 			const toml_datum_t val = toml_table_find(toml, key);
-			if(val.type == TOML_INT64 && val.u.int64 >= 0)
+			if(val.type == TOML_INT64 && val.u.int64 >= 0 && val.u.int64 <= UINT_MAX)
 				conf_item->v.ui = val.u.int64;
 			else
 				log_debug(DEBUG_CONFIG, "%s DOES NOT EXIST or is not a valid unsigned integer", conf_item->k);
