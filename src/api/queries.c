@@ -1134,10 +1134,9 @@ bool compile_filter_regex(struct ftl_conn *api, const char *path, cJSON *json, r
 	if(N < 1)
 		return false;
 
-	// Set number of regexes (positive = unsigned integer)
-	*N_regex = N;
-
-	// Allocate memory for regex array
+	// Allocate memory for the regex array. N is the upper bound; empty or
+	// invalid entries are skipped below, so the number actually compiled
+	// (reported via *N_regex) may be smaller.
 	*regex = calloc(N, sizeof(regex_t));
 	if(*regex == NULL)
 	{
@@ -1168,6 +1167,15 @@ bool compile_filter_regex(struct ftl_conn *api, const char *path, cJSON *json, r
 			regerror(rc, &(*regex)[i], errbuf, sizeof(errbuf));
 			log_err("Failed to compile regex \"%s\": %s",
 			        filter->valuestring, errbuf);
+
+			// Release the regexes compiled so far and the array itself
+			// before returning so the partially-built array does not leak
+			for(unsigned int j = 0; j < i; j++)
+				regfree(&(*regex)[j]);
+			free(*regex);
+			*regex = NULL;
+			*N_regex = 0;
+
 			return send_json_error(api, 400,
 			                       "bad_request",
 			                       "Failed to compile regex",
@@ -1175,6 +1183,22 @@ bool compile_filter_regex(struct ftl_conn *api, const char *path, cJSON *json, r
 		}
 
 		i++;
+	}
+
+	// Only the first i slots were actually compiled; skipped (empty or
+	// invalid) entries leave zero-initialized regex_t slots behind. Report
+	// the real count so the caller never runs regexec()/regfree() over an
+	// uncompiled slot, whose NULL program pointer would crash the daemon
+	// (and, since one process serves DNS, take resolution down with it).
+	*N_regex = i;
+
+	// If no valid regex remained, drop the unused allocation and report that
+	// no filtering is in effect for this list.
+	if(i == 0)
+	{
+		free(*regex);
+		*regex = NULL;
+		return false;
 	}
 
 	// We are filtering, so we have to continue to step over the
