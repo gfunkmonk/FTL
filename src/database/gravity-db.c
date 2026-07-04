@@ -62,6 +62,17 @@ static size_t last_bound_antigravity = 0;
 static size_t last_bound_allowlist = 0;
 static size_t last_bound_denylist = 0;
 
+// The offset above is not sufficient to detect a stale bind on its own: when
+// shm_intarrays is remapped and MOVED (mremap MREMAP_MAYMOVE), groupspos stays
+// the same while the backing pointer changes. carray was bound with
+// SQLITE_STATIC, so SQLite would keep dereferencing the old (freed) address.
+// Cache the last-bound pointer alongside the offset and rebind when either one
+// differs.
+static const int32_t *last_ptr_gravity = NULL;
+static const int32_t *last_ptr_antigravity = NULL;
+static const int32_t *last_ptr_allowlist = NULL;
+static const int32_t *last_ptr_denylist = NULL;
+
 // Private variables
 static sqlite3 *gravity_db = NULL;
 // Used by helper paths that prepare/step/finalize via gravityDB_finalizeTable().
@@ -88,19 +99,24 @@ static bool gravity_has_exact_denylist = false;
 // against a future refactor returning a NULL-but-non-empty array.
 static inline const int32_t *bind_client_groups(sqlite3_stmt *stmt,
                                                 size_t groupspos,
-                                                size_t *last_bound)
+                                                size_t *last_bound,
+                                                const int32_t **last_ptr)
 {
 	int group_count = 0;
 	const int32_t *group_ids = getintarray(groupspos, &group_count);
 	if(group_ids == NULL || group_count == 0)
 		return NULL;
 
-	if(groupspos != *last_bound)
+	// Rebind when either the offset OR the backing pointer changed. The
+	// pointer check catches an mremap() move of shm_intarrays that leaves
+	// groupspos unchanged but invalidates the previously bound address.
+	if(groupspos != *last_bound || group_ids != *last_ptr)
 	{
 		assert(group_ids != NULL);
 		sqlite3_carray_bind(stmt, 2, (void*)group_ids, group_count,
 		                    SQLITE_CARRAY_INT32, SQLITE_STATIC);
 		*last_bound = groupspos;
+		*last_ptr = group_ids;
 	}
 
 	return group_ids;
@@ -248,6 +264,10 @@ void gravityDB_forked(void)
 	last_bound_antigravity = 0;
 	last_bound_allowlist = 0;
 	last_bound_denylist = 0;
+	last_ptr_gravity = NULL;
+	last_ptr_antigravity = NULL;
+	last_ptr_allowlist = NULL;
+	last_ptr_denylist = NULL;
 
 	// Open the database
 	gravityDB_open();
@@ -1142,6 +1162,10 @@ void gravityDB_close(void)
 	last_bound_antigravity = 0;
 	last_bound_allowlist = 0;
 	last_bound_denylist = 0;
+	last_ptr_gravity = NULL;
+	last_ptr_antigravity = NULL;
+	last_ptr_allowlist = NULL;
+	last_ptr_denylist = NULL;
 
 	// Finalize all shared statements
 	sqlite3_stmt **shared[] = {
@@ -1440,7 +1464,7 @@ enum db_result in_allowlist(const char *domain, DNSCacheData *dns_cache, clients
 
 	// Bind client's group_id array via carray (skips rebind for same client)
 	sqlite3_stmt *stmt = allowlist_shared_stmt;
-	if(bind_client_groups(stmt, client->groupspos, &last_bound_allowlist) == NULL)
+	if(bind_client_groups(stmt, client->groupspos, &last_bound_allowlist, &last_ptr_allowlist) == NULL)
 		return NOT_FOUND;
 	enum db_result result;
 	GRAVITY_TIMED_LOOKUP(result, domain_in_list(domain, stmt, "allowlist", &dns_cache->list_id),
@@ -1632,7 +1656,8 @@ enum db_result in_gravity(const char *domain, struct abp_patterns *abp, clientsD
 	// The view's JOINs live-check adlist.enabled and group.enabled on every query.
 	sqlite3_stmt *stmt = antigravity ? antigravity_shared_stmt : gravity_shared_stmt;
 	size_t *last = antigravity ? &last_bound_antigravity : &last_bound_gravity;
-	if(bind_client_groups(stmt, client->groupspos, last) == NULL)
+	const int32_t **last_p = antigravity ? &last_ptr_antigravity : &last_ptr_gravity;
+	if(bind_client_groups(stmt, client->groupspos, last, last_p) == NULL)
 		return NOT_FOUND;
 
 	GRAVITY_PERF_END(_ig_setup_ts, GRAVITY_STATS_IG_WRAPPER);
@@ -1708,7 +1733,7 @@ enum db_result in_denylist(const char *domain, DNSCacheData *dns_cache, clientsD
 
 	// Bind client's group_id array via carray (skips rebind for same client)
 	sqlite3_stmt *stmt = denylist_shared_stmt;
-	if(bind_client_groups(stmt, client->groupspos, &last_bound_denylist) == NULL)
+	if(bind_client_groups(stmt, client->groupspos, &last_bound_denylist, &last_ptr_denylist) == NULL)
 		return NOT_FOUND;
 
 	enum db_result result;
