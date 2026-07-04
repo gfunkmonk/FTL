@@ -450,10 +450,9 @@ static const char *getJSONvalue(struct conf_item *conf_item, cJSON *elem, struct
 		{
 			if(!cJSON_IsArray(elem))
 				return "not of type array";
-			const unsigned int elems = cJSON_GetArraySize(elem);
-			for(unsigned int i = 0; i < elems; i++)
+			unsigned int i = 0;
+			for(const cJSON *item = elem != NULL ? elem->child : NULL; item != NULL; item = item->next, i++)
 			{
-				const cJSON *item = cJSON_GetArrayItem(elem, i);
 				if(!cJSON_IsString(item))
 					return "array has invalid elements";
 				log_debug(DEBUG_CONFIG, "%s[%u] = \"%s\"", conf_item->k, i, item->valuestring);
@@ -961,9 +960,9 @@ static int api_config_put_delete(struct ftl_conn *api)
 
 		// Check if this entry exists in the array
 		int idx = 0;
-		for(; idx < cJSON_GetArraySize(new_item->v.json); idx++)
+		for(const cJSON *elem = new_item->v.json != NULL ? new_item->v.json->child : NULL;
+		    elem != NULL; elem = elem->next, idx++)
 		{
-			const cJSON *elem = cJSON_GetArrayItem(new_item->v.json, idx);
 			if(elem != NULL && elem->valuestring != NULL &&
 				strcmp(elem->valuestring, new_item_str) == 0)
 			{

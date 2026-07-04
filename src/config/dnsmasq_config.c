@@ -346,10 +346,9 @@ bool __attribute__((nonnull(1,3))) write_dnsmasq_config(struct config *conf, boo
 	if(cJSON_GetArraySize(conf->dns.upstreams.v.json) > 0)
 	{
 		fputs("# List of upstream DNS server\n", pihole_conf);
-		const int n = cJSON_GetArraySize(conf->dns.upstreams.v.json);
-		for(int i = 0; i < n; i++)
+		cJSON *server = NULL;
+		cJSON_ArrayForEach(server, conf->dns.upstreams.v.json)
 		{
-			cJSON *server = cJSON_GetArrayItem(conf->dns.upstreams.v.json, i);
 			if(server != NULL && cJSON_IsString(server))
 				fprintf(pihole_conf, "server=%s\n", server->valuestring);
 		}
@@ -495,14 +494,16 @@ bool __attribute__((nonnull(1,3))) write_dnsmasq_config(struct config *conf, boo
 
 	// Add upstream DNS servers for reverse lookups
 	bool revServer_domain = false, revServer_homearpa = false, revServer_internal = false;
-	const unsigned int revServers = cJSON_GetArraySize(conf->dns.revServers.v.json);
-	for(unsigned int i = 0; i < revServers; i++)
+	unsigned int i = 0;
+	cJSON *revServer = NULL;
+	cJSON_ArrayForEach(revServer, conf->dns.revServers.v.json)
 	{
-		cJSON *revServer = cJSON_GetArrayItem(conf->dns.revServers.v.json, i);
-		if(revServer == NULL || !cJSON_IsString(revServer))
+		// 0-based index of this entry, captured before any continue below
+		const unsigned int idx = i++;
+		if(!cJSON_IsString(revServer))
 		{
 			log_err("Skipped invalid dns.revServers[%u]: %s (not a string)",
-			        i, cJSON_Print(revServer));
+			        idx, cJSON_Print(revServer));
 			continue;
 		}
 
@@ -526,13 +527,13 @@ bool __attribute__((nonnull(1,3))) write_dnsmasq_config(struct config *conf, boo
 
 		if(active == NULL || cidr == NULL || target == NULL)
 		{
-			log_err("Skipped invalid dns.revServers[%u]: %s (not fully defined)", i, revServer->valuestring);
+			log_err("Skipped invalid dns.revServers[%u]: %s (not fully defined)", idx, revServer->valuestring);
 			free(copy);
 			continue;
 		}
 
 		fprintf(pihole_conf, "# Reverse server setting (%u%s server)\n",
-		        i+1, get_ordinal_suffix(i+1));
+		        idx+1, get_ordinal_suffix(idx+1));
 		fprintf(pihole_conf, "rev-server=%s,%s\n", cidr, target);
 
 		// If we have a reverse domain, we forward all queries to this domain to
@@ -752,10 +753,9 @@ bool __attribute__((nonnull(1,3))) write_dnsmasq_config(struct config *conf, boo
 		if(cJSON_GetArraySize(conf->dhcp.hosts.v.json) > 0)
 		{
 			fputs("# Per host parameters for the DHCP server\n", pihole_conf);
-			const int n = cJSON_GetArraySize(conf->dhcp.hosts.v.json);
-			for(int i = 0; i < n; i++)
+			cJSON *server = NULL;
+			cJSON_ArrayForEach(server, conf->dhcp.hosts.v.json)
 			{
-				cJSON *server = cJSON_GetArrayItem(conf->dhcp.hosts.v.json, i);
 				if(server != NULL && cJSON_IsString(server))
 					fprintf(pihole_conf, "dhcp-host=%s\n", server->valuestring);
 			}
@@ -766,10 +766,9 @@ bool __attribute__((nonnull(1,3))) write_dnsmasq_config(struct config *conf, boo
 	if(cJSON_GetArraySize(conf->dns.cnameRecords.v.json) > 0)
 	{
 		fputs("# User-defined custom CNAMEs\n", pihole_conf);
-		const int n = cJSON_GetArraySize(conf->dns.cnameRecords.v.json);
-		for(int i = 0; i < n; i++)
+		cJSON *server = NULL;
+		cJSON_ArrayForEach(server, conf->dns.cnameRecords.v.json)
 		{
-			cJSON *server = cJSON_GetArrayItem(conf->dns.cnameRecords.v.json, i);
 			if(server != NULL && cJSON_IsString(server))
 				fprintf(pihole_conf, "cname=%s\n", server->valuestring);
 		}
@@ -1159,9 +1158,9 @@ bool write_custom_list(void)
 	const int N = cJSON_GetArraySize(config.dns.hosts.v.json);
 	if(N > 0)
 	{
-		for(int i = 0; i < N; i++)
+		cJSON *entry = NULL;
+		cJSON_ArrayForEach(entry, config.dns.hosts.v.json)
 		{
-			cJSON *entry = cJSON_GetArrayItem(config.dns.hosts.v.json, i);
 			if(entry != NULL && cJSON_IsString(entry))
 				fprintf(custom_list, "%s\n", entry->valuestring);
 		}

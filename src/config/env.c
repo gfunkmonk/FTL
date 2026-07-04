@@ -224,9 +224,12 @@ bool __attribute__((nonnull(1,2,3))) readEnvValue(struct conf_item *conf_item, s
 
 		// Check if this was a forced setting before
 		// If so, we revert the config option to default
-		for(int i = 0; i < cJSON_GetArraySize(forced_vars); i++)
+		// forced_vars is declared nonnull, so walk the list directly:
+		// cJSON_ArrayForEach() compares it to NULL, which trips
+		// -Werror=nonnull-compare.
+		for(cJSON *forced = forced_vars->child; forced != NULL; forced = forced->next)
 		{
-			const char *forced_var = cJSON_GetArrayItem(forced_vars, i)->valuestring;
+			const char *forced_var = forced->valuestring;
 			if(strcmp(forced_var, conf_item->k) == 0)
 			{
 				log_info("Resetting %s to default (not forced anymore)", conf_item->k);

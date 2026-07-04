@@ -257,10 +257,9 @@ void print_toml_allowed_values(const cJSON *allowed_values, FILE *fp, const unsi
 	if(cJSON_IsArray(allowed_values))
 	{
 		// Loop over array items
-		for(int icnt = 0; icnt < cJSON_GetArraySize(allowed_values); icnt++)
+		const cJSON *jopt = NULL;
+		cJSON_ArrayForEach(jopt, allowed_values)
 		{
-			// Get array item
-			const cJSON *jopt = cJSON_GetArrayItem(allowed_values, icnt);
 			// Skip if this wasn't possible
 			if(!jopt)
 				continue;
@@ -408,11 +407,9 @@ void writeTOMLvalue(FILE * fp, const int indent, const enum conf_type t, union c
 				// If there some elements but we do not indent
 				// (on CLI output), add space
 				fputc(' ', fp);
-			for(unsigned int i = 0; i < elems; i++)
+			cJSON *item = NULL;
+			cJSON_ArrayForEach(item, v->json)
 			{
-				// Get the element
-				cJSON *item = cJSON_GetArrayItem(v->json, i);
-
 				// Skip empty elements
 				if(strlen(item->valuestring) == 0)
 					continue;

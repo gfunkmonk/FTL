@@ -2882,9 +2882,9 @@ bool gravityDB_edit_groups(const enum gravity_list_type listtype, cJSON *groups,
 	// Loop over all loops in array
 	const int groupcount = cJSON_GetArraySize(groups);
 	log_debug(DEBUG_API, "groupscount = %d", groupcount);
-	for(int i = 0; i < groupcount; i++)
+	cJSON *group = NULL;
+	cJSON_ArrayForEach(group, groups)
 	{
-		cJSON *group = cJSON_GetArrayItem(groups, i);
 		if(group == NULL || !cJSON_IsNumber(group))
 			continue;
 
