@@ -200,9 +200,13 @@ static void invalid_enum_item(const char *envvar, struct conf_item *conf_item, s
 	char *allowed_values = cJSON_PrintUnformatted(allowed_items);
 	char *escaped_value = escape_json(envvar);
 
-	// Calculate the size of the error message
-	asprintf(&item->error, "= %s is invalid, allowed options are: %s",
-	         escaped_value, allowed_values);
+	// Build the error message. Mark it as allocated so printFTLenv()
+	// actually frees it again instead of leaking it on every reload.
+	if(asprintf(&item->error, "= %s is invalid, allowed options are: %s",
+	            escaped_value, allowed_values) > 0)
+		item->error_allocated = true;
+	else
+		item->error = NULL;
 
 	free(escaped_value);
 	free(allowed_values);
