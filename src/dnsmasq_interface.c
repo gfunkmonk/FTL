@@ -1390,7 +1390,11 @@ static void check_pihole_PTR(char *domain)
 	{
 		log_debug(DEBUG_EXTRA, "Known PTR record %p: %s -> %s (next = %p)", ptr, ptr->name, ptr->ptr, ptr->next);
 
-		if(ptr->name != NULL && strcmp(ptr->name, domain) == 0)
+		// DNS names are case-insensitive (RFC 4343), so compare case-
+		// insensitively. A case-sensitive match would let a client add an
+		// unbounded number of near-duplicate PTR records for the same
+		// address by varying the case of the query name.
+		if(ptr->name != NULL && strcasecmp(ptr->name, domain) == 0)
 		{
 			// We already have a PTR record for this address
 			log_debug(DEBUG_QUERIES, "PTR record for %s exists", domain);
