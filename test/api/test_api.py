@@ -392,6 +392,85 @@ class TestLuaServerPages:
 
 
 # ---------------------------------------------------------------------------
+# URI control-character / CRLF injection rejection
+# ---------------------------------------------------------------------------
+
+
+def _raw_http(request_bytes, host="127.0.0.1", port=80, timeout=5):
+    """Send a raw HTTP request over a socket and return the raw response bytes.
+
+    Used to smuggle bytes (e.g. a percent-encoded CR/LF in the path) that the
+    requests library would normalise away before they reach FTL.
+    """
+    import socket
+    with socket.create_connection((host, port), timeout=timeout) as sock:
+        sock.sendall(request_bytes)
+        chunks = []
+        try:
+            while True:
+                buf = sock.recv(4096)
+                if not buf:
+                    break
+                chunks.append(buf)
+        except socket.timeout:
+            pass
+    return b"".join(chunks)
+
+
+class TestURIControlCharRejection:
+    """An encoded CR/LF in the request path must never be reflected into a
+    response header (HTTP response splitting / header injection).
+
+    CivetWeb URL-decodes the path in place, so %0d%0a arrives as a literal
+    CR/LF; the .lp redirect handler would otherwise copy it into the Location
+    header verbatim.  FTL rejects any request whose decoded URI contains
+    control characters with 400, before authentication and before any handler
+    runs (see begin_request_handler in src/webserver/webserver.c).
+    """
+
+    def test_crlf_in_lp_path_is_rejected(self, api_session):
+        req = (
+            b"GET /admin/a%0d%0aSet-Cookie:%20injected=1.lp HTTP/1.1\r\n"
+            b"Host: 127.0.0.1\r\n"
+            b"Connection: close\r\n"
+            b"\r\n"
+        )
+        resp = _raw_http(req)
+        status_line = resp.split(b"\r\n", 1)[0]
+        assert b" 400 " in status_line, f"Expected 400, got: {status_line!r}"
+        # The smuggled header must not have been split out of the path into the
+        # response headers.
+        headers = resp.split(b"\r\n\r\n", 1)[0].lower()
+        assert b"set-cookie: injected" not in headers, \
+            f"CRLF was reflected into response headers:\n{resp!r}"
+
+    def test_bare_control_char_in_uri_is_rejected(self, api_session):
+        req = (
+            b"GET /admin/%01%02.lp HTTP/1.1\r\n"
+            b"Host: 127.0.0.1\r\n"
+            b"Connection: close\r\n"
+            b"\r\n"
+        )
+        resp = _raw_http(req)
+        status_line = resp.split(b"\r\n", 1)[0]
+        assert b" 400 " in status_line, f"Expected 400, got: {status_line!r}"
+
+    def test_clean_lp_path_is_not_rejected(self, api_session):
+        # A control-character-free .lp request must still be handled (the guard
+        # must not over-block legitimate traffic).
+        req = (
+            b"GET /admin/index.lp HTTP/1.1\r\n"
+            b"Host: 127.0.0.1\r\n"
+            b"Connection: close\r\n"
+            b"\r\n"
+        )
+        resp = _raw_http(req)
+        status_line = resp.split(b"\r\n", 1)[0]
+        assert b" 400 " not in status_line, \
+            f"Legitimate .lp request was rejected: {status_line!r}"
+
+
+# ---------------------------------------------------------------------------
 # DNS blocking status
 # ---------------------------------------------------------------------------
 

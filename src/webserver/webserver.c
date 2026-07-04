@@ -197,6 +197,36 @@ static int redirect_admin_handler(struct mg_connection *conn, void *input)
 	return 1;
 }
 
+static int begin_request_handler(struct mg_connection *conn)
+{
+	// Reject any request whose (URL-decoded) path contains control
+	// characters. CivetWeb decodes local_uri_raw in place, so an encoded
+	// CR/LF (%0d%0a) arrives here as a literal newline. Several handlers
+	// reflect this path into response headers (e.g. the Location header
+	// built by redirect_lp_handler), where embedded CR/LF would allow HTTP
+	// response header injection / response splitting. Rejecting such requests
+	// centrally - before authentication and before any handler runs - closes
+	// the whole class of URI-into-header injection. This runs for every
+	// request before authentication, so the rejection is logged only at
+	// debug level and never echoes the URI: an unauthenticated client can
+	// trivially flood such requests, and logging each one at warning level
+	// (or logging the URI verbatim) would itself be a log-flooding /
+	// log-injection vector.
+	const struct mg_request_info *request = mg_get_request_info(conn);
+	for(const char *p = request->local_uri_raw; p != NULL && *p != '\0'; p++)
+	{
+		if((unsigned char)*p < 0x20 || (unsigned char)*p == 0x7f)
+		{
+			log_debug(DEBUG_WEBSERVER, "Rejecting request with control character in URI");
+			mg_send_http_error(conn, 400, "Bad Request");
+			return 400;
+		}
+	}
+
+	// Let CivetWeb process the request normally
+	return 0;
+}
+
 static int redirect_lp_handler(struct mg_connection *conn, void *input)
 {
 	// Get requested URI
@@ -794,6 +824,7 @@ void http_init(void)
 	// Configure logging handlers
 	struct mg_callbacks callbacks;
 	memset(&callbacks, 0, sizeof(callbacks));
+	callbacks.begin_request = begin_request_handler;
 	callbacks.log_message = log_http_message;
 	callbacks.log_access  = log_http_access;
 	callbacks.init_lua    = init_lua;
