@@ -74,8 +74,9 @@ static int run_and_stream_command(struct ftl_conn *api, const char *path, const 
 		// Run pihole -g
 		execv(path, (char *const *)args);
 
-		// Exit the fork
-		exit(EXIT_SUCCESS);
+		// execv() only returns if it failed, so the command never ran.
+		// Exit non-zero so the parent reports the action as failed.
+		exit(EXIT_FAILURE);
 	}
 	else
 	{
