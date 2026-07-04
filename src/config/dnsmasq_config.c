@@ -405,16 +405,16 @@ bool __attribute__((nonnull(1,3))) write_dnsmasq_config(struct config *conf, boo
 
 	if(conf->dns.domainNeeded.v.b)
 	{
-		fputs("# Add the domain to simple names (without a period) in /etc/hosts in\n", pihole_conf);
-		fputs("# the same way as for DHCP-derived names\n", pihole_conf);
+		fputs("# Never forward A or AAAA queries for plain names, without dots or\n", pihole_conf);
+		fputs("# domain parts, to upstream nameservers\n", pihole_conf);
 		fputs("domain-needed\n", pihole_conf);
 		fputs("\n", pihole_conf);
 	}
 
 	if(conf->dns.expandHosts.v.b)
 	{
-		fputs("# Never forward A or AAAA queries for plain names, without dots or\n", pihole_conf);
-		fputs("# domain parts, to upstream nameservers\n", pihole_conf);
+		fputs("# Add the domain to simple names (without a period) in /etc/hosts in\n", pihole_conf);
+		fputs("# the same way as for DHCP-derived names\n", pihole_conf);
 		fputs("expand-hosts\n", pihole_conf);
 		fputs("\n", pihole_conf);
 	}
