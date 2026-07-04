@@ -178,7 +178,10 @@ void FTL_parse_pseudoheaders(unsigned char *pheader, const size_t plen)
 	edns.valid = true;
 
 	size_t offset; // The header is 11 bytes before the beginning of OPTION-DATA
-	while ((offset = (p - pheader - 11u)) < rdlen && rdlen < UINT16_MAX)
+	// Require the full 4-byte OPTION-CODE/OPTION-LENGTH header to be
+	// present before reading it, otherwise a truncated option would make
+	// the two GETSHORTs below read past the pseudoheader buffer
+	while ((offset = (p - pheader - 11u)) + 4u <= rdlen && rdlen < UINT16_MAX)
 	{
 		unsigned short code, optlen;
 		GETSHORT(code, p);
