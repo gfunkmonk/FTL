@@ -758,8 +758,10 @@ bool generate_password(char **password, char **pwhash)
 	// Verify that the password hash is valid
 	if(verify_password(*password, *pwhash, false) != PASSWORD_CORRECT)
 	{
-		free(password);
-		free(pwhash);
+		free(*password);
+		*password = NULL;
+		free(*pwhash);
+		*pwhash = NULL;
 		log_warn("Failed to create password hash (verification failed), app password not available");
 		return false;
 	}
