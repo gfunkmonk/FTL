@@ -642,8 +642,12 @@ static void format_hostname_message(char *plain, const int sizeof_plain, char *h
 		return;
 	}
 
+	// Only read name[pos] if pos is actually within the string, otherwise
+	// a stored/caller-supplied pos unrelated to the name length would cause
+	// an out-of-bounds read.
+	const unsigned char badchar = (pos >= 0 && (size_t)pos < strlen(name)) ? (unsigned char)name[pos] : 0;
 	if(snprintf(html, sizeof_html, "Host name of client <code>%s</code> => <code>%s</code> contains (at least) one invalid character (hex %02x) at position %i",
-			escaped_ip, escaped_name, (unsigned char)name[pos], pos) > sizeof_html)
+			escaped_ip, escaped_name, badchar, pos) > sizeof_html)
 		log_warn("format_hostname_message(): Buffer too small to hold HTML message, warning truncated");
 
 	free(escaped_ip);
