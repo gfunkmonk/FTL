@@ -47,6 +47,21 @@ bool validate_dns_hosts(union conf_value *val, const char *key, char err[VALIDAT
 			return false;
 		}
 
+		// Check if the string contains newline characters
+		// Unlike the tokenizer below (which stops at the first '#'
+		// comment), this scans the entire entry so an embedded newline
+		// cannot be smuggled into the generated hosts file
+		const unsigned int len = strlen(item->valuestring);
+		for(unsigned int k = 0; k < len; k++)
+		{
+			if(item->valuestring[k] == '\n' || item->valuestring[k] == '\r')
+			{
+				snprintf(err, VALIDATOR_ERRBUF_LEN, "%s[%d]: contains newline characters",
+				         key, i);
+				return false;
+			}
+		}
+
 		// Check if it's in the form "IP[ \t]HOSTNAME"
 		char *str = strdup(item->valuestring);
 		char *tmp = str;
