@@ -504,7 +504,7 @@ static u_char * __attribute__((malloc)) __attribute__((nonnull(1,2,3))) nameFrom
 		return NULL;
 	}
 
-	unsigned int p = 0, jumped = 0;
+	unsigned int p = 0, jumped = 0, jumps = 0;
 	// Initialize count
 	*count = 1;
 
@@ -550,6 +550,15 @@ static u_char * __attribute__((malloc)) __attribute__((nonnull(1,2,3))) nameFrom
 				free(name);
 				return NULL;
 			}
+			// Guard against self-referential or cyclic compression
+			// pointers, which would otherwise spin here forever (p does
+			// not advance when following a pointer)
+			if(++jumps > MAXNAMELEN)
+			{
+				log_err("Too many DNS compression pointer jumps, aborting");
+				free(name);
+				return NULL;
+			}
 			reader = buffer + offset - 1;
 			jumped = 1; // We have jumped to another location so counting won't go up
 		}
@@ -576,6 +585,15 @@ static u_char * __attribute__((malloc)) __attribute__((nonnull(1,2,3))) nameFrom
 	for(; i < strlen((const char*)name); i++)
 	{
 		p = name[i];
+		// A DNS label is at most 63 bytes; a larger length byte is
+		// malformed wire data. Bail out rather than letting i walk past
+		// the buffer (out-of-bounds read of name[i+1] and write of
+		// name[i] = '.').
+		if(p >= 64 || i + p >= MAXNAMELEN)
+		{
+			name[i] = '\0';
+			break;
+		}
 		for(unsigned j = 0; j < p; j++)
 		{
 			name[i] = name[i + 1];
