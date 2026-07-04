@@ -458,7 +458,11 @@ static const char *getJSONvalue(struct conf_item *conf_item, cJSON *elem, struct
 					return "array has invalid elements";
 				log_debug(DEBUG_CONFIG, "%s[%u] = \"%s\"", conf_item->k, i, item->valuestring);
 			}
-			// If we reach this point, all elements are valid
+			// If we reach this point, all elements are valid. Free the
+			// previous array (duplicated by duplicate_config into newconf)
+			// before overwriting it, otherwise it leaks.
+			if(conf_item->v.json != NULL)
+				cJSON_Delete(conf_item->v.json);
 			conf_item->v.json = cJSON_Duplicate(elem, true);
 		}
 	}
