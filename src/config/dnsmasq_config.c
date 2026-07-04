@@ -502,8 +502,10 @@ bool __attribute__((nonnull(1,3))) write_dnsmasq_config(struct config *conf, boo
 		const unsigned int idx = i++;
 		if(!cJSON_IsString(revServer))
 		{
+			char *dump = cJSON_Print(revServer);
 			log_err("Skipped invalid dns.revServers[%u]: %s (not a string)",
-			        idx, cJSON_Print(revServer));
+			        idx, dump ? dump : "(null)");
+			free(dump);
 			continue;
 		}
 
