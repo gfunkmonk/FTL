@@ -123,7 +123,7 @@ static int redirect_root_handler(struct mg_connection *conn, void *input)
 		// If the "Host" is an IPv6 address, like [::1], parse until ] is found.
 		if (*host == '[')
 		{
-			char *pos = strchr(host, ']');
+			const char *pos = strchr(host, ']');
 			if (!pos)
 			{
 				// Malformed hostname starts with '[', but no ']' found
@@ -135,7 +135,7 @@ static int redirect_root_handler(struct mg_connection *conn, void *input)
 		}
 		else
 		{
-			char *pos = strchr(host, ':');
+			const char *pos = strchr(host, ':');
 			if (pos != NULL)
 			{
 				// A ':' separates hostname and port number
@@ -160,10 +160,14 @@ static int redirect_root_handler(struct mg_connection *conn, void *input)
 		log_debug(DEBUG_API, "URI: %s", uri);
 	}
 
-	// Check if the requested host is the configured (defaulting to pi.hole)
-	// Do not redirect if the host is anything else, e.g. localhost or a
-	// blocked domain in IP blocking mode
-	if(host != NULL && strncmp(host, config.webserver.domain.v.s, host_len) == 0)
+	// Check if the requested host is the configured domain (defaulting to pi.hole).
+	// Do not redirect if the host is anything else, e.g. a blocked domain in
+	// IP blocking mode where the browser connects using the blocked hostname.
+	// Use an exact-length comparison to prevent a prefix-match false positive
+	// (e.g. host "pi" incorrectly matching domain "pi.hole").
+	const size_t domain_len = strlen(config.webserver.domain.v.s);
+	if(host != NULL && host_len == domain_len &&
+	   strncasecmp(host, config.webserver.domain.v.s, host_len) == 0)
 	{
 		// 308 Permanent Redirect from http://pi.hole -> http://pi.hole/admin/
 		if(strcmp(uri, "/") == 0 || strcmp(uri, config.webserver.paths.prefix.v.s) == 0)
@@ -175,8 +179,11 @@ static int redirect_root_handler(struct mg_connection *conn, void *input)
 		}
 	}
 
-	// else: Not redirecting
-	log_debug(DEBUG_API, "Not redirecting %s", uri);
+	// Host did not match webserver.domain — not redirecting. When deployed
+	// behind a reverse proxy, ensure webserver.domain matches the Host header
+	// the proxy forwards (configure via WEBSERVER_DOMAIN in pihole.toml).
+	log_debug(DEBUG_API, "Not redirecting %s (Host: \"%.*s\" != domain: \"%s\")",
+	          uri, (int)host_len, host ? host : "", config.webserver.domain.v.s);
 	return 0;
 }
 
@@ -195,6 +202,36 @@ static int redirect_admin_handler(struct mg_connection *conn, void *input)
 	// 308 Permanent Redirect from [prefix]<webhome without trailing slash> -> [prefix]<webhome>
 	mg_send_http_redirect(conn, prefix_webhome, 308);
 	return 1;
+}
+
+static int begin_request_handler(struct mg_connection *conn)
+{
+	// Reject any request whose (URL-decoded) path contains control
+	// characters. CivetWeb decodes local_uri_raw in place, so an encoded
+	// CR/LF (%0d%0a) arrives here as a literal newline. Several handlers
+	// reflect this path into response headers (e.g. the Location header
+	// built by redirect_lp_handler), where embedded CR/LF would allow HTTP
+	// response header injection / response splitting. Rejecting such requests
+	// centrally - before authentication and before any handler runs - closes
+	// the whole class of URI-into-header injection. This runs for every
+	// request before authentication, so the rejection is logged only at
+	// debug level and never echoes the URI: an unauthenticated client can
+	// trivially flood such requests, and logging each one at warning level
+	// (or logging the URI verbatim) would itself be a log-flooding /
+	// log-injection vector.
+	const struct mg_request_info *request = mg_get_request_info(conn);
+	for(const char *p = request->local_uri_raw; p != NULL && *p != '\0'; p++)
+	{
+		if((unsigned char)*p < 0x20 || (unsigned char)*p == 0x7f)
+		{
+			log_debug(DEBUG_WEBSERVER, "Rejecting request with control character in URI");
+			mg_send_http_error(conn, 400, "Bad Request");
+			return 400;
+		}
+	}
+
+	// Let CivetWeb process the request normally
+	return 0;
 }
 
 static int redirect_lp_handler(struct mg_connection *conn, void *input)
@@ -229,6 +266,11 @@ static int redirect_lp_handler(struct mg_connection *conn, void *input)
 	//    (if present)
 	// Total bytes required: uri_len - 3 + query_len + 1 + 1
 	char *new_uri = calloc(uri_len + query_len - 1, sizeof(char));
+	if(new_uri == NULL)
+	{
+		mg_send_http_error(conn, 500, "Internal Server Error");
+		return 500;
+	}
 
 	// Copy everything from before the ".lp" to the new URI to effectively
 	// remove it
@@ -262,7 +304,28 @@ static int log_http_access(const struct mg_connection *conn, const char *message
 	if(!config.debug.api.v.b)
 		return 1;
 
-	log_web("ACCESS: %s", message);
+	// Never write the access log into the web server's document root. The
+	// log line contains attacker-controlled request data (e.g. the
+	// User-Agent header) and, if the log file lives inside the webroot, it
+	// could be served - and, for a path matching the Lua server-page
+	// pattern, executed - by the web server itself. This is a runtime
+	// backstop for the config validator (validate_webserver_logfile) that
+	// also catches a single config change setting both paths at once.
+	const char *logfile = config.files.log.webserver.v.s;
+	const char *webroot = config.webserver.paths.webroot.v.s;
+	if(logfile != NULL && webroot != NULL && webroot[0] != '\0' &&
+	   strncmp(logfile, webroot, strlen(webroot)) == 0)
+		return 1;
+
+	// Escape the line before writing it: it contains attacker-controlled
+	// data, so logging it verbatim would allow log injection (forged log
+	// lines via CR/LF and other control characters).
+	char *escaped = escape_string(message);
+	if(escaped != NULL)
+	{
+		log_web("ACCESS: %s", escaped);
+		free(escaped);
+	}
 
 	return 1;
 }
@@ -760,7 +823,7 @@ void http_init(void)
 		const char *opt = cJSON_GetStringValue(option);
 
 		// Split option into key and value at the first '='
-		char *equal_sign = strchr(opt, '=');
+		const char *equal_sign = strchr(opt, '=');
 		if(equal_sign == NULL)
 		{
 			log_err("Invalid option in webserver.advancedOpts: %s (missing '=')", opt);
@@ -776,6 +839,20 @@ void http_init(void)
 		}
 		strncpy(key, opt, key_len);
 		key[key_len] = '\0';
+
+		// Reject attempts to override the embedded web server's Lua
+		// options via advancedOpts. Pi-hole configures its own Lua
+		// handling internally, and options such as lua_background_script
+		// or lua_preload_file execute arbitrary code - allowing them here
+		// would turn this trusted-admin passthrough into a code execution
+		// vector (an authenticated user could point the web server at a
+		// script they control).
+		if(strncasecmp(key, "lua_", 4) == 0)
+		{
+			log_warn("Ignoring disallowed webserver.advancedOpts option \"%s\": lua_* options are not permitted", key);
+			free(key);
+			continue;
+		}
 
 		char *value = strdup(equal_sign + 1);
 		if (value == NULL) {
@@ -794,6 +871,7 @@ void http_init(void)
 	// Configure logging handlers
 	struct mg_callbacks callbacks;
 	memset(&callbacks, 0, sizeof(callbacks));
+	callbacks.begin_request = begin_request_handler;
 	callbacks.log_message = log_http_message;
 	callbacks.log_access  = log_http_access;
 	callbacks.init_lua    = init_lua;

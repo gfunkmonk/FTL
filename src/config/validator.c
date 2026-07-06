@@ -32,10 +32,12 @@ bool validate_dns_hosts(union conf_value *val, const char *key, char err[VALIDAT
 		return false;
 	}
 
-	for(int i = 0; i < cJSON_GetArraySize(val->json); i++)
+	// Walk the linked list directly: cJSON_GetArrayItem() is O(index) and
+	// cJSON_GetArraySize() in the loop condition re-walks the whole list
+	// every iteration, which made this loop O(n^2). item->next is O(1).
+	int i = 0;
+	for(cJSON *item = val->json != NULL ? val->json->child : NULL; item != NULL; item = item->next, i++)
 	{
-		// Get array item
-		cJSON *item = cJSON_GetArrayItem(val->json, i);
 
 		// Check if it's a string
 		if(!cJSON_IsString(item))
@@ -43,6 +45,21 @@ bool validate_dns_hosts(union conf_value *val, const char *key, char err[VALIDAT
 			snprintf(err, VALIDATOR_ERRBUF_LEN, "%s[%d]: not a string",
 			         key, i);
 			return false;
+		}
+
+		// Check if the string contains newline characters
+		// Unlike the tokenizer below (which stops at the first '#'
+		// comment), this scans the entire entry so an embedded newline
+		// cannot be smuggled into the generated hosts file
+		const unsigned int len = strlen(item->valuestring);
+		for(unsigned int k = 0; k < len; k++)
+		{
+			if(item->valuestring[k] == '\n' || item->valuestring[k] == '\r')
+			{
+				snprintf(err, VALIDATOR_ERRBUF_LEN, "%s[%d]: contains newline characters",
+				         key, i);
+				return false;
+			}
 		}
 
 		// Check if it's in the form "IP[ \t]HOSTNAME"
@@ -136,10 +153,12 @@ bool validate_dns_cnames(union conf_value *val, const char *key, char err[VALIDA
 		return false;
 	}
 
-	for(int i = 0; i < cJSON_GetArraySize(val->json); i++)
+	// Walk the linked list directly: cJSON_GetArrayItem() is O(index) and
+	// cJSON_GetArraySize() in the loop condition re-walks the whole list
+	// every iteration, which made this loop O(n^2). item->next is O(1).
+	int i = 0;
+	for(cJSON *item = val->json != NULL ? val->json->child : NULL; item != NULL; item = item->next, i++)
 	{
-		// Get array item
-		cJSON *item = cJSON_GetArrayItem(val->json, i);
 
 		// Check if it's a string
 		if(!cJSON_IsString(item))
@@ -228,7 +247,7 @@ bool validate_cidr(union conf_value *val, const char *key, char err[VALIDATOR_ER
 	struct in_addr addr;
 	struct in6_addr addr6;
 	int ip4 = 0, ip6 = 0;
-	if((ip4 = inet_pton(AF_INET, ip, &addr) != 1) && (ip6 = inet_pton(AF_INET6, ip, &addr6)) != 1)
+	if(((ip4 = inet_pton(AF_INET, ip, &addr)) != 1) && ((ip6 = inet_pton(AF_INET6, ip, &addr6)) != 1))
 	{
 		snprintf(err, VALIDATOR_ERRBUF_LEN, "%s: not a valid IPv4 nor IPv6 address (\"%s\")", key, ip);
 		free(str);
@@ -329,6 +348,40 @@ bool validate_filepath_dash(union conf_value *val, const char *key, char err[VAL
 	return validate_filepath(val, key, err);
 }
 
+// Validate the web server log file path. In addition to the regular file-path
+// checks, reject a path inside webserver.paths.webroot: a log file served from
+// the web server's document root can be read - and, if the path matches the
+// Lua server-page pattern, executed - by the web server itself, turning
+// attacker-controlled request data written into the access log into code
+// execution.
+bool validate_webserver_logfile(union conf_value *val, const char *key, char err[VALIDATOR_ERRBUF_LEN])
+{
+	// Regular file-path validation first
+	if(!validate_filepath(val, key, err))
+		return false;
+
+	const char *webroot = config.webserver.paths.webroot.v.s;
+	if(webroot == NULL || webroot[0] == '\0')
+		return true;
+
+	// Compare against the webroot with trailing slashes stripped so that
+	// "<webroot>" and "<webroot>/..." are both rejected, but a sibling
+	// path sharing the prefix (e.g. "<webroot>-backup") is not.
+	size_t wlen = strlen(webroot);
+	while(wlen > 1 && webroot[wlen - 1] == '/')
+		wlen--;
+	if(strncmp(val->s, webroot, wlen) == 0 &&
+	   (val->s[wlen] == '\0' || val->s[wlen] == '/'))
+	{
+		snprintf(err, VALIDATOR_ERRBUF_LEN,
+		         "%s: must not be inside the web server document root (webserver.paths.webroot = \"%s\")",
+		         key, webroot);
+		return false;
+	}
+
+	return true;
+}
+
 // Validate a single regular expression
 static bool validate_regex(const char *regex, char err[VALIDATOR_ERRBUF_LEN])
 {
@@ -353,14 +406,16 @@ bool validate_regex_array(union conf_value *val, const char *key, char err[VALID
 {
 	if(val == NULL || !cJSON_IsArray(val->json))
 	{
-		strncat(err, "%s: not an array", VALIDATOR_ERRBUF_LEN);
+		snprintf(err, VALIDATOR_ERRBUF_LEN, "%s: not an array", key);
 		return false;
 	}
 
-	for(int i = 0; i < cJSON_GetArraySize(val->json); i++)
+	// Walk the linked list directly: cJSON_GetArrayItem() is O(index) and
+	// cJSON_GetArraySize() in the loop condition re-walks the whole list
+	// every iteration, which made this loop O(n^2). item->next is O(1).
+	int i = 0;
+	for(cJSON *item = val->json != NULL ? val->json->child : NULL; item != NULL; item = item->next, i++)
 	{
-		// Get array item
-		cJSON *item = cJSON_GetArrayItem(val->json, i);
 
 		// Check if it's a string
 		if(!cJSON_IsString(item))
@@ -395,10 +450,12 @@ bool validate_dns_revServers(union conf_value *val, const char *key, char err[VA
 	}
 
 	// Iterate over all array items
-	for(int i = 0; i < cJSON_GetArraySize(val->json); i++)
+	// Walk the linked list directly: cJSON_GetArrayItem() is O(index) and
+	// cJSON_GetArraySize() in the loop condition re-walks the whole list
+	// every iteration, which made this loop O(n^2). item->next is O(1).
+	int i = 0;
+	for(cJSON *item = val->json != NULL ? val->json->child : NULL; item != NULL; item = item->next, i++)
 	{
-		// Get array item
-		cJSON *item = cJSON_GetArrayItem(val->json, i);
 
 		// Check if it's a string
 		if(!cJSON_IsString(item))
@@ -590,10 +647,12 @@ void sanitize_dns_hosts(union conf_value *val)
 	if(!cJSON_IsArray(val->json))
 		return;
 
-	for(int i = 0; i < cJSON_GetArraySize(val->json); i++)
+	// Walk the linked list directly: cJSON_GetArrayItem() is O(index) and
+	// cJSON_GetArraySize() in the loop condition re-walks the whole list
+	// every iteration, which made this loop O(n^2). item->next is O(1).
+	int i = 0;
+	for(cJSON *item = val->json != NULL ? val->json->child : NULL; item != NULL; item = item->next, i++)
 	{
-		// Get array item
-		cJSON *item = cJSON_GetArrayItem(val->json, i);
 
 		// Check if it's a string
 		if(!cJSON_IsString(item))
@@ -756,10 +815,12 @@ bool validate_array_no_newline(union conf_value *val, const char *key, char err[
 		return false;
 	}
 
-	for(int i = 0; i < cJSON_GetArraySize(val->json); i++)
+	// Walk the linked list directly: cJSON_GetArrayItem() is O(index) and
+	// cJSON_GetArraySize() in the loop condition re-walks the whole list
+	// every iteration, which made this loop O(n^2). item->next is O(1).
+	int i = 0;
+	for(cJSON *item = val->json != NULL ? val->json->child : NULL; item != NULL; item = item->next, i++)
 	{
-		// Get array item
-		cJSON *item = cJSON_GetArrayItem(val->json, i);
 
 		// Check if it's a string
 		if(!cJSON_IsString(item))

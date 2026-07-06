@@ -12,6 +12,29 @@
 
 #define __USE_XOPEN
 #define _GNU_SOURCE
+#ifdef __GNUC__
+/*
+ * Protect system headers from project-local macro redefinitions.
+ *
+ * `dnsmasq/dnsmasq.h` (and other third-party headers) define very common
+ * identifiers like `free`/`strdup` as macros that expand to internal
+ * wrappers (e.g. `free_real(__func__, __LINE__, (x))`). If such macros are
+ * active while system headers are included, they can be expanded inside
+ * libc prototypes and inline functions and produce invalid code, causing
+ * spurious compiler errors.
+ *
+ * To avoid this we push any existing macro definition on a stack, undefine
+ * the name while including system headers, and restore the original macro
+ * afterwards with `#pragma pop_macro`.
+ *
+ * Note: `#pragma push_macro`/`pop_macro` is a GCC/Clang extension, so we
+ * guard its use with `#ifdef __GNUC__` for portability.
+ */
+#pragma push_macro("free")
+#pragma push_macro("strdup")
+#undef free
+#undef strdup
+#endif
 #include <stdio.h>
 // variable argument lists
 #include <stdarg.h>
@@ -100,17 +123,6 @@
 // Default: 300 (five minutes)
 #define API_SESSION_EXPIRE 300u
 
-// After how many seconds do we check again if a client can be identified by other means?
-// (e.g., interface, MAC address, hostname)
-// Default: 60 (after one minutee)
-#define RECHECK_DELAY 60
-
-// How often should we check again if a client can be identified by other means?
-// (e.g., interface, MAC address, hostname)
-// Default: 3 (once after RECHECK_DELAY seconds, then again after 2*RECHECK_DELAY and 3*RECHECK_DELAY)
-// Important: This number has to be smaller than 256 for this mechanism to work
-#define NUM_RECHECKS 3
-
 // DELAY_STARTUP should only delay the startup of the resolver during a starting up system
 // This setting control how long after boot we consider a system to be in starting-up mode
 // Default: 180 [seconds]
@@ -176,7 +188,12 @@
 // and report accordingly in the log. This will make debugging FTL crash
 // caused by insufficient memory or by code bugs (not properly dealing
 // with NULL pointers) much easier.
+#ifdef __GNUC__
+#pragma pop_macro("strdup")
+#pragma pop_macro("free")
+#endif
 #undef strdup // strdup() is a macro in itself, it needs special handling
+#undef free
 #define free(ptr) { FTLfree(ptr, __FILE__,  __FUNCTION__,  __LINE__); ptr = NULL; }
 #define strdup(str_in) FTLstrdup(str_in, __FILE__,  __FUNCTION__,  __LINE__)
 #define calloc(numer_of_elements, element_size) FTLcalloc(numer_of_elements, element_size, __FILE__,  __FUNCTION__,  __LINE__)
@@ -208,6 +225,9 @@
 #define memset(s, c, n) FTLmemset(s, c, n, __FILE__,  __FUNCTION__,  __LINE__)
 #define memcpy(dest, src, n) FTLmemcpy(dest, src, n, __FILE__,  __FUNCTION__,  __LINE__)
 #define memmove(dest, src, n) FTLmemmove(dest, src, n, __FILE__,  __FUNCTION__,  __LINE__)
+#ifdef strstr
+#undef strstr
+#endif
 #define strstr(haystack, needle) FTLstrstr(haystack, needle, __FILE__,  __FUNCTION__,  __LINE__)
 #define strcmp(s1, s2) FTLstrcmp(s1, s2, __FILE__,  __FUNCTION__,  __LINE__)
 #define strncmp(s1, s2, n) FTLstrncmp(s1, s2, n, __FILE__,  __FUNCTION__,  __LINE__)

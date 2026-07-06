@@ -359,10 +359,9 @@ static bool readStringValue(struct conf_item *conf_item, const char *value, stru
 				log_err("Config setting %s is invalid: not a valid string array (example: [ \"a\", \"b\", \"c\" ])", conf_item->k);
 				return false;
 			}
-			const unsigned int elems = cJSON_GetArraySize(elem);
-			for(unsigned int i = 0; i < elems; i++)
+			unsigned int i = 0;
+			for(const cJSON *item = elem != NULL ? elem->child : NULL; item != NULL; item = item->next, i++)
 			{
-				const cJSON *item = cJSON_GetArrayItem(elem, i);
 				if(!cJSON_IsString(item))
 				{
 					log_err("Config setting %s is invalid: element with index %u is not a string", conf_item->k, i);
@@ -396,7 +395,8 @@ int set_config_from_CLI(const char *key, const char *value)
 		if(is_pihole)
 			printf("Permission error: CAP_CHOWN is missing on the binary\n");
 		else
-			printf("Permission error: User %s is not allowed to edit Pi-hole's config\n", current_user->pw_name);
+			printf("Permission error: User %s is not allowed to edit Pi-hole's config\n",
+			       current_user != NULL ? current_user->pw_name : "(unknown)");
 
 		printf("Please run this command using sudo\n\n");
 		return EXIT_FAILURE;

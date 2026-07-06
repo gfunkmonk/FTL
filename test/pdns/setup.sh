@@ -2,9 +2,11 @@
 
 echo "************ Installing PowerDNS configuration ************"
 
-# Delete possibly existing zone database
+# Delete possibly existing zone database. Include the WAL/SHM siblings —
+# leaving them behind lets SQLite replay stale transactions against the
+# freshly created database on the next open.
 mkdir -p /var/lib/powerdns/
-rm /var/lib/powerdns/pdns.sqlite3 2> /dev/null
+rm -f /var/lib/powerdns/pdns.sqlite3*
 
 # Install config files
 if [ -d /etc/powerdns ]; then
@@ -133,6 +135,17 @@ pdnsutil rrset add ftl. umbrella-multi.ftl. A 8.8.8.8
 pdnsutil rrset add ftl. null.ftl. A 0.0.0.0
 pdnsutil rrset add ftl. null.ftl. AAAA ::
 
+# Serve Apple's iCloud Private Relay domains locally (unsigned) instead of
+# recursing to the public internet. The bats suite resolves mask.icloud.com
+# through an allowlisted client; hosting the mask.icloud.com -> mask.apple-dns.net
+# CNAME chain here keeps the query counts deterministic regardless of whether
+# Apple currently DNSSEC-signs these zones (see test/api/test_api.py).
+pdnsutil zone create icloud.com ns1.ftl
+pdnsutil rrset add icloud.com. mask.icloud.com. CNAME mask.apple-dns.net.
+pdnsutil rrset add icloud.com. mask-h2.icloud.com. CNAME mask.apple-dns.net.
+pdnsutil zone create apple-dns.net ns1.ftl
+pdnsutil rrset add apple-dns.net. mask.apple-dns.net. A 172.224.181.14
+
 # Create valid internal DNSSEC zone
 pdnsutil zone create dnssec ns1.ftl
 pdnsutil rrset add dnssec. a.dnssec. A 192.168.4.1
@@ -175,10 +188,34 @@ pdnsutil zone list-all
 
 echo "********* Done installing PowerDNS configuration **********"
 
-# Start services
-killall pdns_server
-pdns_server --daemon
-# Have to create the socketdir or the recursor will fails to start
+# Stop any previously running powerDNS daemons. killall is asynchronous,
+# so wait until each process is actually gone before starting the new
+# instance — otherwise the new daemon can fail to bind its port silently.
+for proc in pdns_server pdns_recursor; do
+  killall "$proc" 2> /dev/null || true
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    pidof "$proc" > /dev/null 2>&1 || break
+    sleep 0.2
+  done
+  killall -9 "$proc" 2> /dev/null || true
+done
+
+# Have to create the socketdir or the recursor will fail to start. Also
+# clean stale pid/control-socket files left behind by a previous run.
 mkdir -p /var/run/pdns-recursor
-killall pdns_recursor
+rm -f /var/run/pdns-recursor/*
+
+# Start authoritative pdns_server and wait for it to accept queries on
+# its configured port (5554) before continuing.
+pdns_server --daemon
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  dig @127.0.0.1 -p 5554 ftl. SOA +tries=1 +time=1 +short > /dev/null 2>&1 && break
+  sleep 0.5
+done
+
+# Start pdns_recursor and wait for it to accept queries on port 5555.
 pdns_recursor --daemon
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  dig @127.0.0.1 -p 5555 ftl. SOA +tries=1 +time=1 +short > /dev/null 2>&1 && break
+  sleep 0.5
+done

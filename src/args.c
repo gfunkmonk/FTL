@@ -364,9 +364,41 @@ void parse_args(int argc, char *argv[])
 		// Enable stdout printing
 		cli_mode = true;
 		log_ctrl(false, false);
-		readFTLconf(&config, false);
+		const bool conf_read = readFTLconf(&config, false);
 		log_ctrl(false, true);
 		clear_debug_flags(); // No debug printing wanted
+
+		// When querying (not setting) a config value, warn the user if the
+		// value we are about to print may not reflect the current
+		// configuration. This happens when the primary config file exists
+		// but cannot be read - most commonly because the command is run
+		// without sudo as a user that is not allowed to read pihole.toml
+		// (which is installed mode 0640 owned by pihole:pihole). In that
+		// case, FTL silently falls back to a config backup or, if none can
+		// be read either, to the compiled-in defaults. We warn on stderr so
+		// the (possibly stale or default) value can still be consumed on
+		// stdout (see GitHub issue #2849).
+		const bool querying = argc == 2 || argc == 3 ||
+		                      (argc == 4 && strcmp(argv[2], "-q") == 0);
+		if(querying && file_exists(GLOBALTOMLPATH))
+		{
+			if(access(GLOBALTOMLPATH, R_OK) != 0)
+			{
+				const int err = errno;
+				fprintf(stderr, "Warning: %s exists but cannot be read (%s).\n"
+				                "         The value shown below may not reflect the current configuration.\n",
+				        GLOBALTOMLPATH, strerror(err));
+				// Only suggest sudo for permission-related errors; other
+				// failures (e.g. I/O errors) are not fixed by elevated
+				// privileges.
+				if(err == EACCES || err == EPERM)
+					fprintf(stderr, "         Try running this command with sudo.\n");
+			}
+			else if(!conf_read)
+				fprintf(stderr, "Warning: %s could not be parsed.\n"
+				                "         The value shown below may not reflect the current configuration.\n",
+				        GLOBALTOMLPATH);
+		}
 		if(argc == 2)
 			exit(get_config_from_CLI(NULL, false));
 		else if(argc == 3)
@@ -745,7 +777,7 @@ void parse_args(int argc, char *argv[])
 			exit(EXIT_FAILURE);
 		}
 		const long initial_filesize = (argc == 6) ? (long)atol(argv[5]) : -1;
-		if(argc == 5 && initial_filesize < 0)
+		if(argc == 6 && initial_filesize < 0)
 		{
 			fprintf(stderr, "Error: Optional initial file size must be a non-negative integer if specified.\n");
 			exit(EXIT_FAILURE);
@@ -836,6 +868,14 @@ void parse_args(int argc, char *argv[])
 			arg[0] = "";
 			arg[1] = "--test";
 			log_ctrl(false, true);
+			// Signal dnsmasq's die() to exit() instead of trying to
+			// jump back into FTL's main() via longjmp(exit_jmp, ...).
+			// exit_jmp is only initialized (setjmp) once we reach
+			// main(), which never happens on this early-exit path, so
+			// a config read error (e.g., permission denied) would
+			// otherwise longjmp through an uninitialized jmp_buf and
+			// crash (see https://github.com/pi-hole/FTL/issues/2924).
+			only_testing = true;
 			exit(main_dnsmasq(2, (char**)arg));
 		}
 
@@ -851,6 +891,9 @@ void parse_args(int argc, char *argv[])
 			arg[1] = filename;
 			arg[2] = "--test";
 			log_ctrl(false, true);
+			// See note above: ensure die() exit()s cleanly instead of
+			// longjmp()ing through an uninitialized exit_jmp.
+			only_testing = true;
 			exit(main_dnsmasq(3, (char**)arg));
 		}
 

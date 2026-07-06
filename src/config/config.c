@@ -238,6 +238,12 @@ unsigned int __attribute__ ((pure)) config_path_depth(char **paths)
 
 void duplicate_config(struct config *dst, struct config *src)
 {
+	// Lock shared memory while we read the (possibly shared) source
+	// config. replace_config() frees the previous config under the same
+	// lock, so holding it here prevents a use-after-free when another
+	// thread swaps the config out while we are still copying its strings.
+	lock_shm();
+
 	// Post-processing:
 	// Initialize and verify config data
 	for(unsigned int i = 0; i < CONFIG_ELEMENTS; i++)
@@ -290,6 +296,8 @@ void duplicate_config(struct config *dst, struct config *src)
 				break;
 		}
 	}
+
+	unlock_shm();
 }
 
 // True = Identical, False = Different
@@ -1126,7 +1134,7 @@ void initConfig(struct config *conf)
 	conf->webserver.session.restore.c = validate_stub; // Only type-based checking
 
 	conf->webserver.tls.cert.k = "webserver.tls.cert";
-	conf->webserver.tls.cert.h = "Path to the TLS (SSL) certificate file.\n\n All directories along the path must be readable and accessible by the user running FTL (typically 'pihole'). This option is only required when at least one of webserver.port is TLS. The file must be in PEM format, and it must have both, private key and certificate (the *.pem file created must contain a 'CERTIFICATE' section as well as a 'RSA PRIVATE KEY' section).\n\n The *.pem file can be created using `cp server.crt server.pem && cat server.key >> server.pem` if you have these files instead";
+	conf->webserver.tls.cert.h = "Path to the TLS (SSL) certificate file.\n\n All directories along the path must be readable and accessible by the user running FTL (typically 'pihole'). This option is only required when at least one of webserver.port is TLS. The file must be in PEM format, and it must have both, private key and certificate (the *.pem file created must contain a 'CERTIFICATE' section as well as a 'PRIVATE KEY' section).\n\n The *.pem file can be created using `cp server.crt server.pem && cat server.key >> server.pem` if you have these files instead";
 	conf->webserver.tls.cert.a = cJSON_CreateStringReference("A valid TLS certificate file (*.pem)");
 	conf->webserver.tls.cert.f = FLAG_RESTART_FTL;
 	conf->webserver.tls.cert.t = CONF_STRING;
@@ -1370,7 +1378,7 @@ void initConfig(struct config *conf)
 	conf->files.log.webserver.t = CONF_STRING;
 	conf->files.log.webserver.f = FLAG_RESTART_FTL;
 	conf->files.log.webserver.d.s = (char*)"/var/log/pihole/webserver.log";
-	conf->files.log.webserver.c = validate_filepath;
+	conf->files.log.webserver.c = validate_webserver_logfile;
 
 	// struct misc
 	conf->misc.privacylevel.k = "misc.privacylevel";
@@ -1659,6 +1667,12 @@ void initConfig(struct config *conf)
 	conf->debug.timing.t = CONF_BOOL;
 	conf->debug.timing.d.b = false;
 	conf->debug.timing.c = validate_stub; // Only type-based checking
+
+	conf->debug.performance.k = "debug.performance";
+	conf->debug.performance.h = "Log gravity lookup and FTL DNS cache performance statistics every 5 minutes. For each operation type (gravity, antigravity, denylist, allowlist), reports the call count, average and maximum latency, and percentage of slow queries (>1 ms). Also reports the FTL cache hit/miss ratio, indicating how often gravity.db is queried at all.";
+	conf->debug.performance.t = CONF_BOOL;
+	conf->debug.performance.d.b = false;
+	conf->debug.performance.c = validate_stub; // Only type-based checking
 
 	conf->debug.all.k = "debug.all";
 	conf->debug.all.h = "Set all debug flags at once. This is a convenience option to enable all debug flags at once. Note that this option is not persistent, setting it to true will enable all *remaining* debug flags but unsetting it will disable *all* debug flags.";

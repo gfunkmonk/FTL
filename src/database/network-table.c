@@ -572,7 +572,7 @@ static bool insert_netDB_device(sqlite3 *db, const char *hwaddr, const time_t fi
 	}
 
 	// Bind firstSeen to prepared statement (2nd argument)
-	if((rc = sqlite3_bind_int(query_stmt, 2, firstSeen)) != SQLITE_OK)
+	if((rc = sqlite3_bind_int64(query_stmt, 2, firstSeen)) != SQLITE_OK)
 	{
 		log_err("insert_netDB_device(\"%s\",%lu, %lu, %u, \"%s\"): Failed to bind firstSeen (error %d): %s",
 		        hwaddr, (unsigned long)firstSeen, (unsigned long)lastQuery, numQueriesARP, macVendor, rc, sqlite3_errstr(rc));
@@ -580,7 +580,7 @@ static bool insert_netDB_device(sqlite3 *db, const char *hwaddr, const time_t fi
 	}
 
 	// Bind lastQuery to prepared statement (3rd argument)
-	if((rc = sqlite3_bind_int(query_stmt, 3, lastQuery)) != SQLITE_OK)
+	if((rc = sqlite3_bind_int64(query_stmt, 3, lastQuery)) != SQLITE_OK)
 	{
 		log_err("insert_netDB_device(\"%s\",%lu, %lu, %u, \"%s\"): Failed to bind lastQuery (error %d): %s",
 		        hwaddr, (unsigned long)firstSeen, (unsigned long)lastQuery, numQueriesARP, macVendor, rc, sqlite3_errstr(rc));
@@ -781,7 +781,7 @@ update_netDB_interface_end:
 	if(query_stmt != NULL)
 		sqlite3_finalize(query_stmt);
 
-	return true;
+	return success;
 }
 
 // Loop over all clients known to FTL and ensure we add them all to the database
@@ -821,9 +821,12 @@ static bool add_FTL_clients_to_network_table(sqlite3 *db, const enum arp_status 
 
 		// Get hostname and IP address of this client
 		char hostname[MAXHOSTNAMELEN], ipaddr[INET6_ADDRSTRLEN], interface[MAXIFACESTRLEN];
-		strncpy(ipaddr, getstr(client->ippos), sizeof(ipaddr));
-		strncpy(hostname, getstr(client->namepos), sizeof(hostname));
-		strncpy(interface, getstr(client->ifacepos), sizeof(interface));
+		strncpy(ipaddr, getstr(client->ippos), sizeof(ipaddr) - 1);
+		ipaddr[sizeof(ipaddr) - 1] = '\0';
+		strncpy(hostname, getstr(client->namepos), sizeof(hostname) - 1);
+		hostname[sizeof(hostname) - 1] = '\0';
+		strncpy(interface, getstr(client->ifacepos), sizeof(interface) - 1);
+		interface[sizeof(interface) - 1] = '\0';
 
 		// Skip if already handled above (first check against clients_array_size as we might have added
 		// more clients to FTL's memory herein (those known only from the database))
@@ -837,24 +840,37 @@ static bool add_FTL_clients_to_network_table(sqlite3 *db, const enum arp_status 
 		else
 			log_debug(DEBUG_ARP, "Network table: %s NOT known through ARP/neigh cache", ipaddr);
 
+		// Snapshot the client fields we need before the loop starts releasing
+		// the SHM lock around the blocking DB/file work below. While unlocked
+		// the client slot may be recycled (getClient() then returns NULL) or
+		// even reused by a different client, so a re-fetched pointer can be
+		// NULL or valid-but-wrong. Reading from this snapshot avoids both a
+		// NULL dereference and cross-client contamination; the pointer is only
+		// re-fetched (and NULL-checked) where we must write back to it.
+		const char snap_hwlen = client->hwlen;
+		unsigned char snap_hwaddr[6] = { 0 };
+		if(snap_hwlen == 6)
+			memcpy(snap_hwaddr, client->hwaddr, sizeof(snap_hwaddr));
+		const time_t snap_lastQuery = client->lastQuery;
+		const time_t snap_firstSeen = client->firstSeen;
+		const unsigned int snap_numQueries = client->count;
+		const unsigned int snap_numQueriesARP = client->numQueriesARP;
+
 		//
 		// Variant 1: Try to find a device with an EDNS(0)-provided hardware address
 		//
 		int dbID = DB_NODATA;
-		if(client->hwlen == 6)
+		if(snap_hwlen == 6)
 		{
 			snprintf(hwaddr, sizeof(hwaddr), "%02X:%02X:%02X:%02X:%02X:%02X",
-			         client->hwaddr[0], client->hwaddr[1],
-			         client->hwaddr[2], client->hwaddr[3],
-			         client->hwaddr[4], client->hwaddr[5]);
+			         snap_hwaddr[0], snap_hwaddr[1],
+			         snap_hwaddr[2], snap_hwaddr[3],
+			         snap_hwaddr[4], snap_hwaddr[5]);
 			hwaddr[6*2+5] = '\0';
 
 			unlock_shm();
 			dbID = find_device_by_hwaddr(db, hwaddr);
 			lock_shm();
-
-			// Reacquire client pointer (if may have changed when unlocking above)
-			client = getClient(clientID, true);
 
 			if(dbID >= 0)
 				log_debug(DEBUG_ARP, "Network table: Client with MAC %s is network ID %i", hwaddr, dbID);
@@ -868,9 +884,6 @@ static bool add_FTL_clients_to_network_table(sqlite3 *db, const enum arp_status 
 			unlock_shm();
 			dbID = find_device_by_recent_ip(db, ipaddr);
 			lock_shm();
-
-			// Reacquire client pointer (if may have changed when unlocking above)
-			client = getClient(clientID, true);
 
 			if(dbID > DB_NODATA)
 			{
@@ -933,9 +946,6 @@ static bool add_FTL_clients_to_network_table(sqlite3 *db, const enum arp_status 
 						dbID = find_device_by_hwaddr(db, hwaddr);
 						lock_shm();
 
-						// Reacquire client pointer (it may have changed when unlocking above)
-						client = getClient(clientID, true);
-
 						if(dbID >= 0)
 							log_debug(DEBUG_ARP, "Network table: Client with MAC %s is network ID %i", hwaddr, dbID);
 						dhcp_lease = true;
@@ -959,9 +969,6 @@ static bool add_FTL_clients_to_network_table(sqlite3 *db, const enum arp_status 
 			dbID = find_device_by_mock_hwaddr(db, ipaddr);
 			lock_shm();
 
-			// Reacquire client pointer (if may have changed when unlocking above)
-			client = getClient(clientID, true);
-
 			if(dbID > DB_NODATA)
 			{
 				log_debug(DEBUG_ARP, "Network table: Client with IP %s has no MAC info but is known as mock-hwaddr client with network ID %i",
@@ -976,7 +983,8 @@ static bool add_FTL_clients_to_network_table(sqlite3 *db, const enum arp_status 
 
 		if(dbID == DB_FAILED)
 		{
-			// SQLite error
+			// SQLite error - release the SHM lock still held here
+			unlock_shm();
 			break;
 		}
 
@@ -984,57 +992,51 @@ static bool add_FTL_clients_to_network_table(sqlite3 *db, const enum arp_status 
 		else if(dbID == DB_NODATA)
 		{
 			char macVendor[MAXVENDORLEN] = { 0 };
-			if(client->hwlen == 6 || dhcp_lease)
+			if(snap_hwlen == 6 || dhcp_lease)
 			{
 				// Normal client, MAC was likely obtained from EDNS(0) data
 				// or from dhcp lease
 				unlock_shm();
 				getMACVendor(hwaddr, macVendor);
 				lock_shm();
-
-				// Reacquire client pointer (if may have changed when unlocking above)
-				client = getClient(clientID, true);
 			}
 
 			log_debug(DEBUG_ARP, "Network table: Creating new FTL device MAC = %s, IP = %s, hostname = \"%s\", vendor = \"%s\", interface = \"%s\"",
 			          hwaddr, ipaddr, hostname, macVendor, interface);
 
-			// Add new device to database
-			const time_t lastQuery = client->lastQuery;
-			const time_t firstSeen = client->firstSeen;
-			const unsigned int numQueries = client->count;
+			// Add new device to database (from the snapshot taken above)
 			unlock_shm();
-			if(!insert_netDB_device(db, hwaddr, firstSeen, lastQuery, numQueries, macVendor, &dbID))
+			if(!insert_netDB_device(db, hwaddr, snap_firstSeen, snap_lastQuery, snap_numQueries, macVendor, &dbID))
 				break;
 
 			lock_shm();
 
-			// Reacquire client pointer (if may have changed when unlocking above)
+			// Reacquire client pointer and reset the ARP counter only if the
+			// slot is still valid (it may have been recycled while unlocked)
 			client = getClient(clientID, true);
-
-			// Reset client counter
-			client->numQueriesARP = 0;
+			if(client != NULL)
+				client->numQueriesARP = 0;
 		}
 		else	// Device already in database
 		{
 			log_debug(DEBUG_ARP, "Network table: Updating existing FTL device MAC = %s, IP = %s, hostname = \"%s\", interface = \"%s\"",
 			          hwaddr, ipaddr, hostname, interface);
 
-			// Update timestamp of last query if applicable
-			const time_t lastQuery = client->lastQuery;
-			const unsigned int numQueriesARP = client->numQueriesARP;
+			// Update timestamp and query count from the snapshot taken above
 			unlock_shm();
-			if(!update_netDB_lastQuery(db, dbID, lastQuery))
+			if(!update_netDB_lastQuery(db, dbID, snap_lastQuery))
 				break;
 
 			// Update number of queries if applicable
-			if(!update_netDB_numQueries(db, dbID, numQueriesARP))
+			if(!update_netDB_numQueries(db, dbID, snap_numQueriesARP))
 				break;
 
 			lock_shm();
-			// Reacquire client pointer (if may have changed when unlocking above)
+			// Reacquire client pointer and reset the ARP counter only if the
+			// slot is still valid (it may have been recycled while unlocked)
 			client = getClient(clientID, true);
-			client->numQueriesARP = 0;
+			if(client != NULL)
+				client->numQueriesARP = 0;
 		}
 
 		unlock_shm();
@@ -1084,7 +1086,7 @@ static bool add_local_interfaces_to_network_table(sqlite3 *db, time_t now, unsig
 {
 	// Return early if database is known to be broken
 	if(FTLDBerror())
-		return SQLITE_ERROR;
+		return false;
 
 	log_debug(DEBUG_ARP, "Network table: Adding local interfaces to network table");
 	cJSON *links = cJSON_CreateArray();
@@ -1155,7 +1157,8 @@ static bool add_local_interfaces_to_network_table(sqlite3 *db, time_t now, unsig
 
 				// Try to import query data from a possibly previously existing mock-device
 				int mockID = find_device_by_mock_hwaddr(db, ipaddr);
-				int lastQuery = 0, firstSeen = now, numQueries = 0;
+				time_t firstSeen = now, lastQuery = 0;
+				int numQueries = 0;
 				if(mockID >= 0)
 				{
 					lastQuery = db_query_int_int(db, "SELECT lastQuery from network where id = ?1", mockID);
@@ -1245,11 +1248,17 @@ bool flush_network_table(void)
 
 	// Remove all IP addresses
 	if(dbquery(db, "DELETE FROM network_addresses;") != SQLITE_OK)
+	{
+		dbclose(&db);
 		return false;
+	}
 
 	// Remove all devices
 	if(dbquery(db, "DELETE FROM network;") != SQLITE_OK)
+	{
+		dbclose(&db);
 		return false;
+	}
 
 	// Close database
 	dbclose(&db);
@@ -1283,7 +1292,10 @@ void parse_neighbor_cache(sqlite3 *db)
 
 	// Delete old entries from network table
 	if(!clean_network_table(db))
+	{
+		dbquery(db, "ROLLBACK");
 		return;
+	}
 
 	// Initialize array of status for individual clients used to
 	// remember the status of a client already seen in the neigh cache
@@ -1291,6 +1303,12 @@ void parse_neighbor_cache(sqlite3 *db)
 	const int clients = counters->clients;
 	unlock_shm();
 	enum arp_status *client_status = calloc(clients, sizeof(enum arp_status));
+	if(client_status == NULL)
+	{
+		log_err("parse_neighbor_cache(): Failed to allocate client_status array (%d entries)", clients);
+		dbquery(db, "ROLLBACK");
+		return;
+	}
 	for(int i = 0; i < clients; i++)
 		client_status[i] = CLIENT_NOT_HANDLED;
 
@@ -1305,6 +1323,7 @@ void parse_neighbor_cache(sqlite3 *db)
 			log_err("Failed to read ARP cache, cannot update network table");
 			cJSON_Delete(json);
 			free(client_status);
+			dbquery(db, "ROLLBACK");
 			return;
 		}
 		log_debug(DEBUG_ARP, "Network table: Successfully read ARP cache with %i entries",
@@ -1414,7 +1433,10 @@ void parse_neighbor_cache(sqlite3 *db)
 			{
 				clientsData *client = getClient(clientID, true);
 				if(!client)
+				{
+					unlock_shm();
 					continue;
+				}
 
 				// Client is known to Pi-hole, update properties
 				// with their real values
@@ -1426,6 +1448,46 @@ void parse_neighbor_cache(sqlite3 *db)
 				numQueries = client->numQueriesARP;
 				totalQueries = client->count;
 				client_status[clientID] = CLIENT_ARP_COMPLETE;
+
+				// If the MAC the kernel reports for this IP
+				// just appeared or changed since we last
+				// resolved this client's group membership, the
+				// client may be stuck in the wrong (often
+				// default) group. FTL keys clients by IP, so an
+				// external DHCP server handing the same device a
+				// new IP creates a fresh client whose MAC is
+				// only learned here - after the client's first
+				// query already resolved it (to the default
+				// group). Nothing would otherwise re-trigger
+				// MAC-based group resolution (#2912).
+				//
+				// Detect that case by comparing the freshly
+				// learned MAC against the one stored on the
+				// client. If it differs, adopt the new MAC (so
+				// get_client_groupids() matches it from the
+				// in-memory ARP cache even before the
+				// network_addresses table catches up) and clear
+				// found_group so the client's next query
+				// re-resolves its groups and picks up any
+				// MAC-based group.
+				unsigned char newhw[6] = { 0 };
+				if(sscanf(hwaddr, "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
+				          &newhw[0], &newhw[1], &newhw[2],
+				          &newhw[3], &newhw[4], &newhw[5]) == 6 &&
+				   (client->hwlen != 6 ||
+				    memcmp(client->hwaddr, newhw, sizeof(newhw)) != 0))
+				{
+					log_debug(DEBUG_CLIENTS, "Network table: MAC behind %s changed to %s, re-resolving client groups",
+					          ip, hwaddr);
+
+					memcpy(client->hwaddr, newhw, sizeof(newhw));
+					client->hwlen = sizeof(newhw);
+
+					// Clearing found_group makes the next query
+					// for this client re-resolve its groups via
+					// get_client_groupids() (lazy re-resolution).
+					client->flags.found_group = false;
+				}
 			}
 			// else
 			// {
@@ -1546,6 +1608,7 @@ void parse_neighbor_cache(sqlite3 *db)
 		{
 			log_err("Database error in ARP cache processing loop");
 			free(client_status);
+			dbquery(db, "ROLLBACK");
 			return;
 		}
 	}
@@ -1554,6 +1617,7 @@ void parse_neighbor_cache(sqlite3 *db)
 	if(killed)
 	{
 		free(client_status);
+		dbquery(db, "ROLLBACK");
 		return;
 	}
 
@@ -1562,6 +1626,7 @@ void parse_neighbor_cache(sqlite3 *db)
 	if(!add_FTL_clients_to_network_table(db, client_status, clients, now, &additional_entries))
 	{
 		free(client_status);
+		dbquery(db, "ROLLBACK");
 		return;
 	}
 
@@ -1570,17 +1635,26 @@ void parse_neighbor_cache(sqlite3 *db)
 
 	// Check thread cancellation
 	if(killed)
+	{
+		dbquery(db, "ROLLBACK");
 		return;
+	}
 
 	// Finally, loop over the available interfaces to ensure we list the
 	// IP addresses correctly (local addresses are NOT contained in the
 	// ARP/neighbor cache).
 	if(!add_local_interfaces_to_network_table(db, now, &additional_entries))
+	{
+		dbquery(db, "ROLLBACK");
 		return;
+	}
 
 	// Check thread cancellation
 	if(killed)
+	{
+		dbquery(db, "ROLLBACK");
 		return;
+	}
 
 	// Ensure mock-devices which are not assigned to any addresses any more
 	// (they have been converted to "real" devices), are removed at this point
@@ -1592,6 +1666,7 @@ void parse_neighbor_cache(sqlite3 *db)
 	{
 		log_err("Database error in mock-device cleaning statement");
 		checkFTLDBrc(rc);
+		dbquery(db, "ROLLBACK");
 		return;
 	}
 
@@ -1605,6 +1680,7 @@ void parse_neighbor_cache(sqlite3 *db)
 			log_err("Storing devices in network table failed: %s", sqlite3_errstr(rc));
 
 		checkFTLDBrc(rc);
+		dbquery(db, "ROLLBACK");
 		return;
 	}
 
@@ -1663,9 +1739,6 @@ bool unify_hwaddr(sqlite3 *db)
 		const int id = sqlite3_column_int(stmt, 0);
 		const char *hwaddr = (char*)sqlite3_column_text(stmt, 1);
 
-		// Reset statement
-		sqlite3_reset(stmt);
-
 		// Update firstSeen with lowest value across all rows with the same hwaddr
 		dbquery(db, "UPDATE network "\
 		            "SET firstSeen = (SELECT MIN(firstSeen) FROM network WHERE hwaddr = \'%s\' COLLATE NOCASE) "\
@@ -1680,6 +1753,11 @@ bool unify_hwaddr(sqlite3 *db)
 		dbquery(db, "DELETE FROM network "\
 		            "WHERE hwaddr = \'%s\' COLLATE NOCASE "\
 		            "AND id != %i;", hwaddr, id);
+
+		// Reset statement only after all queries using hwaddr have
+		// executed as sqlite3_column_text() pointers are invalidated by
+		// sqlite3_reset().
+		sqlite3_reset(stmt);
 	}
 
 	// Update database version to 4
@@ -1730,8 +1808,6 @@ static bool getMACVendor(const char *hwaddr, char vendor[MAXVENDORLEN])
 
 	log_debug(DEBUG_ARP, "getMACVendor(\"%s\")", hwaddr);
 
-	log_debug(DEBUG_ARP, "getMACVendor(\"%s\")", hwaddr);
-
 	struct stat st;
 	if(stat(config.files.macvendor.v.s, &st) != 0)
 	{
@@ -1748,7 +1824,8 @@ static bool getMACVendor(const char *hwaddr, char vendor[MAXVENDORLEN])
 
 	bool success = false;
 	sqlite3 *macvendor_db = NULL;
-	int rc = sqlite3_open_v2(config.files.macvendor.v.s, &macvendor_db, SQLITE_OPEN_READONLY, NULL);
+	int rc = sqlite3_open_v2(config.files.macvendor.v.s, &macvendor_db,
+	                         SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX, NULL);
 	if(rc != SQLITE_OK)
 	{
 		log_err("getMACVendor(\"%s\") - SQL error: %s", hwaddr, sqlite3_errstr(rc));
@@ -1756,11 +1833,20 @@ static bool getMACVendor(const char *hwaddr, char vendor[MAXVENDORLEN])
 		return false;
 	}
 
-	// Only keep "XX:YY:ZZ" (8 characters)
-	char hwaddrshort[9];
-	strncpy(hwaddrshort, hwaddr, 8);
-	hwaddrshort[8] = '\0';
-	const char querystr[] = "SELECT vendor FROM macvendor WHERE mac LIKE ?;";
+	// Match the most specific IEEE assignment, not just the 24-bit OUI. Many
+	// OUIs are sub-divided into smaller MA-M (/28) and MA-S / IAB (/36) blocks,
+	// which the macvendor table stores in Wireshark manuf form (e.g.
+	// "34:E1:D1:80/28", "00:1B:C5:00:00/36"); the 24-bit prefix of such a block
+	// resolves only to "IEEE Registration Authority" (or to no row at all).
+	// hwaddr is a 17-char colon MAC (guaranteed by the length check above), so
+	// we reconstruct the candidate /24, /28 and /36 keys from it and let the
+	// longest match win - additive, requiring no change to the database itself.
+	const char querystr[] =
+		"SELECT vendor FROM macvendor WHERE mac IN ("
+		"substr(upper(?1),1,8),"                                   /* /24: 34:E1:D1        */
+		"substr(upper(?1),1,9)||substr(upper(?1),10,1)||'0/28',"   /* /28: 34:E1:D1:80/28  */
+		"substr(upper(?1),1,12)||substr(upper(?1),13,1)||'0/36'"   /* /36: 00:1B:C5:00:00/36 */
+		") ORDER BY length(mac) DESC LIMIT 1;";
 
 	sqlite3_stmt *stmt = NULL;
 	rc = sqlite3_prepare_v2(macvendor_db, querystr, -1, &stmt, NULL);
@@ -1770,11 +1856,11 @@ static bool getMACVendor(const char *hwaddr, char vendor[MAXVENDORLEN])
 		goto getMACVendor_end;
 	}
 
-	// Bind hwaddrshort to prepared statement
-	if((rc = sqlite3_bind_text(stmt, 1, hwaddrshort, -1, SQLITE_STATIC)) != SQLITE_OK)
+	// Bind the full MAC; the candidate prefixes are derived in SQL above
+	if((rc = sqlite3_bind_text(stmt, 1, hwaddr, -1, SQLITE_STATIC)) != SQLITE_OK)
 	{
-		log_err("getMACVendor(\"%s\" -> \"%s\"): Failed to bind hwaddrshort: %s",
-		        hwaddr, hwaddrshort, sqlite3_errstr(rc));
+		log_err("getMACVendor(\"%s\"): Failed to bind hwaddr: %s",
+		        hwaddr, sqlite3_errstr(rc));
 		goto getMACVendor_end;
 	}
 
@@ -1844,7 +1930,7 @@ bool updateMACVendorRecords(sqlite3 *db)
 		const int id = sqlite3_column_int(stmt, 0);
 
 		// Get vendor for MAC
-		char vendor[MAXVENDORLEN];
+		char vendor[MAXVENDORLEN] = { 0 };
 		getMACVendor((char*)sqlite3_column_text(stmt, 1), vendor);
 
 		// Prepare statement
@@ -2438,8 +2524,8 @@ bool networkTable_readDevicesGetRecord(sqlite3_stmt *read_stmt, network_record *
 		network->id = sqlite3_column_int(read_stmt, 0);
 		network->hwaddr = (char*)sqlite3_column_text(read_stmt, 1);
 		network->iface = (char*)sqlite3_column_text(read_stmt, 2);
-		network->firstSeen = sqlite3_column_int(read_stmt, 3);
-		network->lastQuery = sqlite3_column_int(read_stmt, 4);
+		network->firstSeen = sqlite3_column_int64(read_stmt, 3);
+		network->lastQuery = sqlite3_column_int64(read_stmt, 4);
 		network->numQueries = sqlite3_column_int(read_stmt, 5);
 		network->macVendor = (char*)sqlite3_column_text(read_stmt, 6);
 		return true;
@@ -2504,7 +2590,7 @@ bool networkTable_readIPsGetRecord(sqlite3_stmt *read_stmt, network_addresses_re
 		network_addresses->ip = (char*)sqlite3_column_text(read_stmt, 0);
 		network_addresses->lastSeen = sqlite3_column_int64(read_stmt, 1);
 		network_addresses->name = (char*)sqlite3_column_text(read_stmt, 2);
-		network_addresses->nameUpdated = sqlite3_column_int64(read_stmt, 1);
+		network_addresses->nameUpdated = sqlite3_column_int64(read_stmt, 3);
 		return true;
 	}
 

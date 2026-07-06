@@ -125,6 +125,36 @@ components:
                     - $ref: 'common.yaml#/components/errors/unauthorized'
                     - $ref: 'common.yaml#/components/schemas/took'
     direct:
+      get:
+        summary: List all groups
+        tags:
+          - "Group management"
+        operationId: "list_groups"
+        description: |
+          Returns the full list of groups configured on your Pi-hole.
+
+          This is the collection form of `GET /api/groups/{name}` (see `get_groups`)
+          and returns the same array schema without requiring a `{name}` path parameter.
+        responses:
+          '200':
+            description: OK
+            content:
+              application/json:
+                schema:
+                  allOf:
+                    - $ref: 'groups.yaml#/components/schemas/groups/get'
+                    - $ref: 'common.yaml#/components/schemas/took'
+                examples:
+                  groups:
+                    $ref: 'groups.yaml#/components/examples/groups'
+          '401':
+            description: Unauthorized
+            content:
+              application/json:
+                schema:
+                  allOf:
+                    - $ref: 'common.yaml#/components/errors/unauthorized'
+                    - $ref: 'common.yaml#/components/schemas/took'
       post:
         summary: Add new group
         tags:
@@ -135,7 +165,7 @@ components:
 
           On success, a new resource is created at `/groups/{name}`.
 
-          The `database_error` with message `UNIQUE constraint failed` error indicates that a group with the same name already exists.
+          The `database_error` with message `The item is already present` error indicates that a group with the same name already exists.
         requestBody:
           description: Callback payload
           content:
@@ -353,7 +383,7 @@ components:
               - item: "Children"
             errors:
               - item: "Garden"
-                error: "UNIQUE constraint failed: group.name"
+                error: "The item is already present"
   examples:
     groups:
       value:
@@ -398,7 +428,7 @@ components:
             error:
               key: "database_error"
               message: "Could not add to gravity database"
-              hint: "UNIQUE constraint failed: grouplist.group"
+              hint: "The item is already present"
             took: 0.003
 
   parameters:

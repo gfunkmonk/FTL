@@ -76,7 +76,11 @@ static char * __attribute__((malloc)) double_sha256_password(const char *passwor
 	              strlen(password),
 	              (uint8_t*)password);
 
+#if NETTLE_VERSION_MAJOR >= 4
+	sha256_digest(&ctx, raw_response);
+#else
 	sha256_digest(&ctx, SHA256_DIGEST_SIZE, raw_response);
+#endif
 	sha256_raw_to_hex(raw_response, response);
 
 	// Hash password a second time
@@ -85,7 +89,11 @@ static char * __attribute__((malloc)) double_sha256_password(const char *passwor
 	              strlen(response),
 	              (uint8_t*)response);
 
+#if NETTLE_VERSION_MAJOR >= 4
+	sha256_digest(&ctx, raw_response);
+#else
 	sha256_digest(&ctx, SHA256_DIGEST_SIZE, raw_response);
+#endif
 	sha256_raw_to_hex(raw_response, response);
 
 	return strdup(response);
@@ -422,9 +430,14 @@ enum password_result verify_password(const char *password, const char *pwhash, c
 	if(password == NULL || password[0] == '\0')
 		return PASSWORD_INCORRECT;
 
-	// Check if there has already been one login attempt within this second
+	// Check if there has already been one login attempt within this second.
+	// verify_password() runs concurrently from multiple webserver worker
+	// threads, so the shared counters must be guarded by a mutex to keep
+	// the rate limit effective.
+	static pthread_mutex_t rate_limit_lock = PTHREAD_MUTEX_INITIALIZER;
 	static time_t last_password_attempt = 0;
 	static unsigned int num_password_attempts = 0;
+	pthread_mutex_lock(&rate_limit_lock);
 	if(rate_limiting &&
 	   last_password_attempt > 0 &&
 	   last_password_attempt == time(NULL))
@@ -433,6 +446,7 @@ enum password_result verify_password(const char *password, const char *pwhash, c
 		if(++num_password_attempts > MAX_PASSWORD_ATTEMPTS_PER_SECOND)
 		{
 			// Rate limit reached
+			pthread_mutex_unlock(&rate_limit_lock);
 			sleepms(250);
 			return PASSWORD_RATE_LIMITED;
 		}
@@ -443,6 +457,7 @@ enum password_result verify_password(const char *password, const char *pwhash, c
 		num_password_attempts = 1;
 		last_password_attempt = time(NULL);
 	}
+	pthread_mutex_unlock(&rate_limit_lock);
 
 	// Check password hash format
 	if(pwhash[0] == '$')
@@ -750,8 +765,10 @@ bool generate_password(char **password, char **pwhash)
 	// Verify that the password hash is valid
 	if(verify_password(*password, *pwhash, false) != PASSWORD_CORRECT)
 	{
-		free(password);
-		free(pwhash);
+		free(*password);
+		*password = NULL;
+		free(*pwhash);
+		*pwhash = NULL;
 		log_warn("Failed to create password hash (verification failed), app password not available");
 		return false;
 	}
@@ -781,6 +798,7 @@ bool create_cli_password(void)
 	{
 		log_err("Failed to open CLI password file for writing: %s", strerror(errno));
 		free(cli_password);
+		cli_password = NULL;
 		return false;
 	}
 
@@ -790,6 +808,7 @@ bool create_cli_password(void)
 		log_err("Failed to write CLI password to file: %s", strerror(errno));
 		fclose(file);
 		free(cli_password);
+		cli_password = NULL;
 		return false;
 	}
 
@@ -801,6 +820,7 @@ bool create_cli_password(void)
 	{
 		log_err("Failed to set permissions on CLI password file: %s", strerror(errno));
 		free(cli_password);
+		cli_password = NULL;
 		return false;
 	}
 

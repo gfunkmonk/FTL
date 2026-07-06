@@ -15,10 +15,16 @@
 #include "config/config.h"
 // generate_password()
 #include "config/password.h"
+// lock_shm(), unlock_shm()
+#include "shmem.h"
 
 // TOTP+HMAC
 #include <nettle/hmac.h>
 #include <nettle/sha1.h>
+// pthread_mutex_t
+#include <pthread.h>
+// nettle version
+#include <nettle/version.h>
 
 static uint32_t hotp(const uint8_t *key, size_t key_len, const uint64_t counter, const uint8_t digits)
 {
@@ -33,8 +39,11 @@ static uint32_t hotp(const uint8_t *key, size_t key_len, const uint64_t counter,
 	// Compute HMAC-SHA1
 	hmac_sha1_update(&ctx, sizeof(counter_be), (uint8_t*)&counter_be);
 	uint8_t out[SHA1_DIGEST_SIZE];
+#if NETTLE_VERSION_MAJOR >= 4
+	hmac_sha1_digest(&ctx, out);
+#else
 	hmac_sha1_digest(&ctx, SHA1_DIGEST_SIZE, out);
-
+#endif
 	// Truncate HMAC-SHA1 for ease of use
 	// RFC 6238 (section 5.3): offset = last nibble of hash
 	const uint8_t offset = out[SHA1_DIGEST_SIZE-1] & 0x0F;
@@ -68,6 +77,8 @@ static uint32_t hotp(const uint8_t *key, size_t key_len, const uint64_t counter,
 // (section 5.3) specifies that the default is 6 (up to 8) digits, however, the
 // example given in RFC 6238 uses 8 digits.
 #define RFC6238_DIGITS 6
+
+#define RFC6238_SECRET_B32_LEN (RFC6238_SECRET_LEN*8/5)
 
 static uint32_t totp(const uint8_t *key, const size_t key_len, const time_t now)
 {
@@ -195,25 +206,87 @@ static bool encode_uint8_t_array_to_base32(const uint8_t *in, const size_t in_le
 	return true;
 }
 
+// Copy the TOTP secret from the config to the provided buffer, ensuring thread
+// safety and validating the secret length. Returns true on success, false on
+// failure.
+static bool copy_totp_secret(char *secret, const size_t secret_len)
+{
+	if(secret == NULL || secret_len == 0)
+		return false;
+
+	secret[0] = '\0';
+
+	lock_shm();
+	const char *cfg_secret = config.webserver.api.totp_secret.v.s;
+	if(cfg_secret == NULL)
+	{
+		unlock_shm();
+		return true;
+	}
+
+	const size_t len = strnlen(cfg_secret, secret_len);
+	if(len >= secret_len)
+	{
+		unlock_shm();
+		log_err("2FA secret exceeds maximum supported length (%zu)", secret_len - 1);
+		return false;
+	}
+
+	memcpy(secret, cfg_secret, len);
+	secret[len] = '\0';
+	unlock_shm();
+
+	return true;
+}
+
 static time_t last_attempt = 0;
-static uint32_t last_code = 0;
+// Last accepted time-step counter (RFC 6238 T value). Tracking the counter
+// instead of the raw code value enforces true one-time-use: once a step has
+// been accepted, that step and any earlier one can never be replayed, even
+// though the code stays numerically valid across the -1..+1 acceptance window.
+static uint64_t last_counter = 0;
+static pthread_mutex_t totp_lock = PTHREAD_MUTEX_INITIALIZER;
 enum totp_status verifyTOTP(const uint32_t incode)
 {
+	pthread_mutex_lock(&totp_lock);
+
 	// Only one attempt per second is allowed
 	const time_t now = time(NULL);
 	if(now == last_attempt)
+	{
+		pthread_mutex_unlock(&totp_lock);
 		return TOTP_RATE_LIMIT;
+	}
 	last_attempt = now;
+
+	char b32_secret[RFC6238_SECRET_B32_LEN + 1] = { 0 };
+	if(!copy_totp_secret(b32_secret, sizeof(b32_secret)) || b32_secret[0] == '\0')
+	{
+		pthread_mutex_unlock(&totp_lock);
+		return TOTP_INVALID;
+	}
 
 	// Decode base32 secret
 	uint8_t decoded_secret[RFC6238_SECRET_LEN];
-	if(!decode_base32_to_uint8_array(config.webserver.api.totp_secret.v.s, decoded_secret, sizeof(decoded_secret)))
-		return false;
+	if(!decode_base32_to_uint8_array(b32_secret, decoded_secret, sizeof(decoded_secret)))
+	{
+		pthread_mutex_unlock(&totp_lock);
+		return TOTP_INVALID;
+	}
 
 	// Verify code for the previous, the current and the next time step
+	// Defer a reuse verdict until the whole window has been checked: two
+	// adjacent time steps can yield identical digits, so a match on a stale
+	// step must not prevent a genuinely fresh (later) step from being
+	// accepted for the same submitted code.
+	bool reused = false;
 	for(int i = -1; i <= 1; i++)
 	{
-		const uint32_t gencode = totp(decoded_secret, sizeof(decoded_secret), now + i*RFC6238_X);
+		const time_t t = now + i*RFC6238_X;
+		// Time-step counter for this candidate window (RFC 6238 T value),
+		// matching the value used internally by totp()
+		const uint64_t counter = (t - RFC6238_T0) / RFC6238_X;
+		const uint32_t gencode = totp(decoded_secret, sizeof(decoded_secret), t);
 
 		// Verify code
 		// RFC 6238 (section 4.2): If the calculated value matches the value
@@ -226,33 +299,49 @@ enum totp_status verifyTOTP(const uint32_t incode)
 		// it accepted previously
 		if(gencode == incode)
 		{
-			if(gencode == last_code)
+			// Reject reuse of an already accepted (or earlier) time
+			// step, but keep scanning in case a later, still-fresh
+			// step also matches this code
+			if(counter <= last_counter)
 			{
-				log_warn("2FA code has already been used (%i, %u), please wait %lu seconds",
-				         i, gencode, (unsigned long)(RFC6238_X - (now % RFC6238_X)));
-				return TOTP_REUSED;
+				reused = true;
+				continue;
 			}
 			const char *which = i == -1 ? "previous" : i == 0 ? "current" : "next";
 			log_debug(DEBUG_API, "2FA code from %s time step is valid", which);
-			last_code = gencode;
+			last_counter = counter;
+			pthread_mutex_unlock(&totp_lock);
 			return TOTP_CORRECT;
 		}
 	}
 
+	if(reused)
+	{
+		log_warn("2FA code has already been used, please wait %lu seconds",
+		         (unsigned long)(RFC6238_X - (now % RFC6238_X)));
+		pthread_mutex_unlock(&totp_lock);
+		return TOTP_REUSED;
+	}
+
+	pthread_mutex_unlock(&totp_lock);
 	return TOTP_INVALID;
 }
 
 // Print TOTP code to stdout (for CLI use)
 int printTOTP(void)
 {
-	if(strlen(config.webserver.api.totp_secret.v.s) == 0)
+	char b32_secret[RFC6238_SECRET_B32_LEN + 1] = { 0 };
+	if(!copy_totp_secret(b32_secret, sizeof(b32_secret)))
+		return EXIT_FAILURE;
+
+	if(strlen(b32_secret) == 0)
 	{
 		puts("0");
 		return EXIT_SUCCESS;
 	}
 	// Decode base32 secret
 	uint8_t decoded_secret[RFC6238_SECRET_LEN];
-	if(!decode_base32_to_uint8_array(config.webserver.api.totp_secret.v.s, decoded_secret, sizeof(decoded_secret)))
+	if(!decode_base32_to_uint8_array(b32_secret, decoded_secret, sizeof(decoded_secret)))
 		return EXIT_FAILURE;
 
 	// Get current time

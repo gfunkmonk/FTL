@@ -129,6 +129,38 @@ components:
                     - $ref: 'common.yaml#/components/errors/unauthorized'
                     - $ref: 'common.yaml#/components/schemas/took'
     direct:
+      get:
+        summary: List all lists
+        parameters:
+          - $ref: 'lists.yaml#/components/parameters/listtype_optional'
+        tags:
+          - "List management"
+        operationId: "list_lists"
+        description: |
+          Returns the full list of subscribed lists configured on your Pi-hole.
+
+          This is the collection form of `GET /api/lists/{list}` (see `get_lists`)
+          and returns the same array schema without requiring a `{list}` path parameter.
+        responses:
+          '200':
+            description: OK
+            content:
+              application/json:
+                schema:
+                  allOf:
+                    - $ref: 'lists.yaml#/components/schemas/lists/get'
+                    - $ref: 'common.yaml#/components/schemas/took'
+                examples:
+                  lists:
+                    $ref: 'lists.yaml#/components/examples/lists'
+          '401':
+            description: Unauthorized
+            content:
+              application/json:
+                schema:
+                  allOf:
+                    - $ref: 'common.yaml#/components/errors/unauthorized'
+                    - $ref: 'common.yaml#/components/schemas/took'
       post:
         summary: Add new list
         tags:
@@ -145,7 +177,7 @@ components:
 
           On success, a new resource is created at `/lists/{list}`.
 
-          The `database_error` with message `UNIQUE constraint failed` error indicates that this list already exists.
+          The `database_error` with message `The item is already present` error indicates that this list already exists.
         parameters:
           - $ref: 'lists.yaml#/components/parameters/listtype'
         requestBody:
@@ -417,7 +449,7 @@ components:
               - item: "https://mirror1.malwaredomains.com/files/justdomains"
             errors:
               - item: "https://raw.githubusercontent.com/abc/def/master/hosts"
-                error: "UNIQUE constraint failed: adlist.address"
+                error: "The item is already present"
   examples:
     lists:
       value:
@@ -466,7 +498,7 @@ components:
             error:
               key: "database_error"
               message: "Could not add to gravity database"
-              hint: "UNIQUE constraint failed: listlist.list"
+              hint: "The item is already present"
             took: 0.003
   parameters:
     list:

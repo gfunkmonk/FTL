@@ -289,6 +289,7 @@ bool create_message_table(sqlite3 *db)
 	if(!db_set_FTL_property(db, DB_VERSION, 6))
 	{
 		log_err("create_message_table(): Failed to update database version!");
+		dbquery(db, "ROLLBACK");
 		return false;
 	}
 
@@ -387,9 +388,9 @@ static int _add_message(const enum message_type type,
 		goto end_of_add_message;
 	}
 
-	// Execute and finalize (we accept both SQLITE_OK = removed and
-	// SQLITE_DONE = nothing to remove)
-	if((rc = sqlite3_step(stmt)) != SQLITE_OK && rc != SQLITE_DONE)
+	// Execute and finalize. sqlite3_step() returns SQLITE_DONE for
+	// non-SELECT statements (whether or not any rows were deleted).
+	if((rc = sqlite3_step(stmt)) != SQLITE_DONE)
 	{
 		log_err("add_message(type=%u, message=%s) - SQL error step DELETE: %s",
 			type, message, sqlite3_errstr(rc));
@@ -458,6 +459,7 @@ static int _add_message(const enum message_type type,
 			log_err("add_message(type=%u, message=%s) - Failed to bind argument %zu (type %u): %s",
 			        type, message, 3 + j, datatype, sqlite3_errstr(rc));
 			sqlite3_finalize(stmt);
+			stmt = NULL;
 			checkFTLDBrc(rc);
 			va_end(ap);
 			goto end_of_add_message;
@@ -475,16 +477,14 @@ static int _add_message(const enum message_type type,
 		goto end_of_add_message;
 	}
 
+	// Get row ID of the newly added message (only on success)
+	rowid = sqlite3_last_insert_rowid(db);
+
 end_of_add_message: // Close database connection
 
 	// Final database handling
 	if(stmt != NULL)
-	{
 		sqlite3_finalize(stmt);
-
-		// Get row ID of the newly added message
-		rowid = sqlite3_last_insert_rowid(db);
-	}
 
 	dbclose(&db);
 
@@ -509,22 +509,30 @@ bool delete_message(cJSON *ids, int *deleted)
 	if(sqlite3_prepare_v2(db, "DELETE FROM message WHERE id = ?;", -1, &res, 0) != SQLITE_OK)
 	{
 		log_err("SQL error (%i): %s", sqlite3_errcode(db), sqlite3_errmsg(db));
+		dbclose(&db);
 		return false;
 	}
 
 	// Loop over id in ids array
+	bool success = true;
 	cJSON *id = NULL;
 	cJSON_ArrayForEach(id, ids)
 	{
 		// Bind id to prepared statement
 		const int idval = cJSON_GetNumberValue(id);
-		sqlite3_bind_int(res, 1, idval);
+		if(sqlite3_bind_int(res, 1, idval) != SQLITE_OK)
+		{
+			log_err("delete_message() - Failed to bind id %d: %s", idval, sqlite3_errmsg(db));
+			success = false;
+			break;
+		}
 
 		// Execute and finalize
 		if(sqlite3_step(res) != SQLITE_DONE)
 		{
 			log_err("SQL error (%i): %s", sqlite3_errcode(db), sqlite3_errmsg(db));
-			return false;
+			success = false;
+			break;
 		}
 
 		// Add to deleted count
@@ -537,7 +545,7 @@ bool delete_message(cJSON *ids, int *deleted)
 	// Close database connection
 	dbclose(&db);
 
-	return true;
+	return success;
 }
 
 static void format_regex_message(char *plain, const int sizeof_plain, char *html, const int sizeof_html, const char *type, const char *regex, const char *warning, const int dbindex)
@@ -634,8 +642,12 @@ static void format_hostname_message(char *plain, const int sizeof_plain, char *h
 		return;
 	}
 
+	// Only read name[pos] if pos is actually within the string, otherwise
+	// a stored/caller-supplied pos unrelated to the name length would cause
+	// an out-of-bounds read.
+	const unsigned char badchar = (pos >= 0 && (size_t)pos < strlen(name)) ? (unsigned char)name[pos] : 0;
 	if(snprintf(html, sizeof_html, "Host name of client <code>%s</code> => <code>%s</code> contains (at least) one invalid character (hex %02x) at position %i",
-			escaped_ip, escaped_name, (unsigned char)name[pos], pos) > sizeof_html)
+			escaped_ip, escaped_name, badchar, pos) > sizeof_html)
 		log_warn("format_hostname_message(): Buffer too small to hold HTML message, warning truncated");
 
 	free(escaped_ip);
@@ -695,8 +707,17 @@ static void format_dnsmasq_warn_message(char *plain, const int sizeof_plain, cha
 	if(sizeof_html < 1 || html == NULL)
 		return;
 
-	if(snprintf(html, sizeof_html, "<code>dnsmasq</code> warning:<pre>%s</pre>Check out <a href=\"https://docs.pi-hole.net/ftldns/dnsmasq_warn/\" target=\"_blank\">our documentation</a> for further information.", message) > sizeof_html)
+	// Escape the warning text before embedding it into HTML, matching the
+	// other renderers - the dnsmasq message is untrusted and would
+	// otherwise allow stored HTML/script injection in the admin interface
+	char *escaped_message = escape_html(message);
+	if(escaped_message == NULL)
+		return;
+
+	if(snprintf(html, sizeof_html, "<code>dnsmasq</code> warning:<pre>%s</pre>Check out <a href=\"https://docs.pi-hole.net/ftldns/dnsmasq_warn/\" target=\"_blank\">our documentation</a> for further information.", escaped_message) > sizeof_html)
 		log_warn("format_dnsmasq_warn_message(): Buffer too small to hold HTML message, warning truncated");
+
+	free(escaped_message);
 }
 
 static void format_load_message(char *plain, const int sizeof_plain, char *html, const int sizeof_html, const double load, const int nprocs)
@@ -893,7 +914,7 @@ static void format_connection_error(char *plain, const int sizeof_plain, char *h
 		return;
 	}
 
-	if(snprintf(html, sizeof_html, "Connection error (<strong>%s</strong>): %s (<strong>%s</strong>)", server, reason, error) > sizeof_html)
+	if(snprintf(html, sizeof_html, "Connection error (<strong>%s</strong>): %s (<strong>%s</strong>)", escaped_server, escaped_reason, escaped_error) > sizeof_html)
 		log_warn("format_connection_error(): Buffer too small to hold HTML message, warning truncated");
 
 	free(escaped_reason);
@@ -911,8 +932,28 @@ static void format_ntp_message(char *plain, const int sizeof_plain, char *html, 
 	if(sizeof_html < 1 || html == NULL)
 		return;
 
-	if(snprintf(html, sizeof_html, "%s in NTP %s:<pre>%s</pre>", level, who, message) > sizeof_html)
+	char *escaped_level = escape_html(level);
+	char *escaped_who = escape_html(who);
+	char *escaped_message = escape_html(message);
+
+	// Return early if memory allocation failed
+	if(escaped_level == NULL || escaped_who == NULL || escaped_message == NULL)
+	{
+		if(escaped_level != NULL)
+			free(escaped_level);
+		if(escaped_who != NULL)
+			free(escaped_who);
+		if(escaped_message != NULL)
+			free(escaped_message);
+		return;
+	}
+
+	if(snprintf(html, sizeof_html, "%s in NTP %s:<pre>%s</pre>", escaped_level, escaped_who, escaped_message) > sizeof_html)
 		log_warn("format_ntp_message(): Buffer too small to hold HTML message, warning truncated");
+
+	free(escaped_level);
+	free(escaped_who);
+	free(escaped_message);
 }
 
 static void format_verify_message(char *plain, const int sizeof_plain, char *html, const int sizeof_html,
@@ -974,6 +1015,7 @@ static void format_gravity_restored_message(char *plain, const int sizeof_plain,
 			return;
 
 		if(snprintf(html, sizeof_html, "Gravity database damaged, restore attempt <strong class=\"log-green\">successful</strong><br>The gravity database was restored using the automatic backup created on %s<br><br>Please check your filesystem for corruption, and your disk space for availability.", escaped_status) > sizeof_html)
+			log_warn("format_gravity_restored_message(): Buffer too small to hold HTML message, warning truncated");
 
 		free(escaped_status);
 	}

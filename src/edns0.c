@@ -168,7 +168,7 @@ void FTL_parse_pseudoheaders(unsigned char *pheader, const size_t plen)
 //      level of the responder.  In this way, a requestor will learn the
 //      implementation level of a responder as a side effect of every
 //      response, including error responses and including RCODE=BADVERS.
-	unsigned char edns0_version = (ttl >> 16) % 0xFF;
+	unsigned char edns0_version = (ttl >> 16) & 0xFF;
 	if(edns0_version != 0x00)
 		return;
 
@@ -178,7 +178,10 @@ void FTL_parse_pseudoheaders(unsigned char *pheader, const size_t plen)
 	edns.valid = true;
 
 	size_t offset; // The header is 11 bytes before the beginning of OPTION-DATA
-	while ((offset = (p - pheader - 11u)) < rdlen && rdlen < UINT16_MAX)
+	// Require the full 4-byte OPTION-CODE/OPTION-LENGTH header to be
+	// present before reading it, otherwise a truncated option would make
+	// the two GETSHORTs below read past the pseudoheader buffer
+	while ((offset = (p - pheader - 11u)) + 4u <= rdlen && rdlen < UINT16_MAX)
 	{
 		unsigned short code, optlen;
 		GETSHORT(code, p);
@@ -196,7 +199,7 @@ void FTL_parse_pseudoheaders(unsigned char *pheader, const size_t plen)
 		log_debug(DEBUG_EDNS0, "code %u, optlen %u (bytes %zu - %zu of %u)",
 		          code, optlen, offset, offset + optlen, rdlen);
 
-		if (code == EDNS0_ECS && config.dns.EDNS0ECS.v.b)
+		if (code == EDNS0_ECS && config.dns.EDNS0ECS.v.b && optlen >= 4)
 		{
 			// EDNS(0) CLIENT SUBNET
 			// RFC 7871              Client Subnet in DNS Queries              6.  Option Format
@@ -229,7 +232,13 @@ void FTL_parse_pseudoheaders(unsigned char *pheader, const size_t plen)
 			else if(family == 2 && addrlen <= sizeof(addr.addr6.s6_addr)) // IPv6
 				memcpy(addr.addr6.s6_addr, p, addrlen);
 			else
+			{
+				// Unhandled family: p has already advanced by the
+				// 4-byte FAMILY/prefix header above, so consume the
+				// remaining option data to line up with the next option
+				p += optlen - 4;
 				continue;
+			}
 
 			// Advance working pointer (we already walked 4 bytes above)
 			p += optlen - 4;
@@ -286,27 +295,28 @@ void FTL_parse_pseudoheaders(unsigned char *pheader, const size_t plen)
 		else if(code == EDNS0_COOKIE && optlen >= 16 && optlen <= 40)
 		{
 			// EDNS(0) COOKIE client + server
-			unsigned char client_cookie[8];
-			memcpy(client_cookie, p, 8);
-
-			unsigned short server_cookie_len = optlen - 8;
-			unsigned char *server_cookie = calloc(server_cookie_len, sizeof(unsigned char));
-			memcpy(server_cookie, p + 8u, server_cookie_len);
 			if(config.debug.edns0.v.b)
 			{
+				unsigned char client_cookie[8];
+				memcpy(client_cookie, p, 8);
+
+				const unsigned short server_cookie_len = optlen - 8;
+				// Server cookie is at most 32 bytes (optlen max 40 - 8)
+				unsigned char server_cookie[32];
+				memcpy(server_cookie, p + 8u, server_cookie_len);
+
 				char pretty_client_cookie[8*2 + 1]; // client: fixed length
 				char *pp = pretty_client_cookie;
 				for(unsigned int j = 0; j < 8; j++)
 					pp += sprintf(pp, "%02X", client_cookie[j]);
-				char *pretty_server_cookie = calloc(server_cookie_len*2 + 1u, sizeof(char)); // server: variable length
+				// Server cookie hex: at most 32*2 + 1 = 65 bytes
+				char pretty_server_cookie[32*2 + 1];
 				pp = pretty_server_cookie;
 				for(unsigned int j = 0; j < server_cookie_len; j++)
 					pp += sprintf(pp, "%02X", server_cookie[j]);
 				log_debug(DEBUG_EDNS0, "COOKIE (client + server): %s (client), %s (server, %u bytes)",
 				     pretty_client_cookie, pretty_server_cookie, server_cookie_len);
-				free(pretty_server_cookie);
 			}
-			free(server_cookie);
 
 			// Advance working pointer
 			p += optlen;
@@ -315,7 +325,9 @@ void FTL_parse_pseudoheaders(unsigned char *pheader, const size_t plen)
 		{
 			// EDNS(0) MAC address (BYTE format)
 			memcpy(edns.mac_byte, p, sizeof(edns.mac_byte));
-			print_mac(edns.mac_text, (unsigned char*)edns.mac_byte, sizeof(edns.mac_byte));
+			char *buff = print_mac((unsigned char*)edns.mac_byte, sizeof(edns.mac_byte));
+			strncpy(edns.mac_text, buff, sizeof(edns.mac_text));
+			edns.mac_text[sizeof(edns.mac_text) - 1] = '\0';
 			edns.mac_set = true;
 			log_debug(DEBUG_EDNS0, "MAC address (BYTE format): %s", edns.mac_text);
 
@@ -366,7 +378,11 @@ void FTL_parse_pseudoheaders(unsigned char *pheader, const size_t plen)
 				char *pp = pretty_payload;
 				for(unsigned int j = 0; j < optlen; j++)
 					pp += sprintf(pp, "0x%02X ", payload[j]);
-				pretty_payload[optlen*5 - 1] = '\0'; // Truncate away the trailing whitespace
+
+				// Truncate away the trailing whitespace
+				if(optlen)
+					pretty_payload[optlen*5 - 1] = '\0';
+
 				log_debug(DEBUG_EDNS0, "CPE-ID (payload size %u): \"%s\" (%s)",
 				     optlen, payload, pretty_payload);
 				free(pretty_payload);
@@ -389,7 +405,7 @@ void FTL_parse_pseudoheaders(unsigned char *pheader, const size_t plen)
 			//   2: |                           OPTION-LENGTH                       |
 			//      +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
 			//   4: | INFO-CODE                                                     |
-			edns.ede = ntohs(((int)p[1] << 8) | p[0]);
+			edns.ede = (p[0] << 8) | p[1];
 			//      +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
 			//   6: / EXTRA-TEXT ...                                                /
 			//      +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+

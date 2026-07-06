@@ -95,6 +95,26 @@ if [[ -n "${debug}" ]]; then
     restart=1
 fi
 
+# If we are building in debug mode, ensure CMake is configured for a Debug build
+# This appends the cache entry so callers can still pass other -D options.
+if [[ -n "${debug}" ]]; then
+    if [[ -n "${cmake_args}" ]]; then
+        cmake_args="${cmake_args} -DCMAKE_BUILD_TYPE=Debug"
+    else
+        cmake_args="-DCMAKE_BUILD_TYPE=Debug"
+    fi
+fi
+
+# If we are asked to run tests, also build the standalone regression harnesses.
+# They are gated behind CMake options so ordinary builds do not produce them.
+if [[ -n "${test}" ]]; then
+    if [[ -n "${cmake_args}" ]]; then
+        cmake_args="${cmake_args} -DBUILD_TAR_REGRESSION=ON -DBUILD_GZIP_REGRESSION=ON"
+    else
+        cmake_args="-DBUILD_TAR_REGRESSION=ON -DBUILD_GZIP_REGRESSION=ON"
+    fi
+fi
+
 # If we are in dev mode, we want to build, install, restart, and tail the logs
 # by default
 if [[ -n "${dev}" ]]; then
@@ -160,7 +180,11 @@ fi
 mkdir -p "${builddir}"
 cd "${builddir}"
 if [[ -n ${cmake_args} ]]; then
-    cmake "${cmake_args}" ..
+    # Intentionally unquoted: cmake_args may hold several space-separated -D
+    # options (e.g. "-DA=1 -DB=2") that must reach CMake as separate arguments.
+    # Quoting would pass them as one -D value and silently drop all but the first.
+    # shellcheck disable=SC2086
+    cmake ${cmake_args} ..
 else
     cmake ..
 fi
@@ -184,6 +208,13 @@ if [[ -n "${install}" ]]; then
 else
     echo "Copying compiled pihole-FTL binary to repository root"
     cp pihole-FTL ../
+    # Copy the regression test binaries alongside it so the bats tests can run
+    # them from the repo root.
+    for regression_bin in tar_regression gzip_regression; do
+        if [[ -f "${regression_bin}" ]]; then
+            cp "${regression_bin}" ../
+        fi
+    done
 fi
 
 # If we are asked to run tests, we do this here
