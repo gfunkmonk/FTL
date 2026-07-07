@@ -295,6 +295,8 @@ components:
                   type: array
                   items:
                     type: string
+                upstreamCA:
+                  type: string
                 blocking:
                   type: object
                   properties:
@@ -744,6 +746,7 @@ components:
         config:
           dns:
             upstreams: [ "127.0.0.1#5353", "8.8.8.8" ]
+            upstreamCA: ""
             CNAMEdeepInspect: true
             blockESNI: true
             EDNS0ECS: true
