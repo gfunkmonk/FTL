@@ -36,6 +36,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <string.h>
+#include <stdlib.h>
 #include <time.h>
 
 // Per-upstream state, one entry per encrypted upstream. Plaintext entries are
@@ -52,6 +53,13 @@ static struct proxy_up g_ups[DOTDOH_MAX_UPSTREAMS];
 static int g_nups = 0;       // number of encrypted upstreams recorded
 static int g_nactive = 0;    // number of those successfully armed
 static bool g_armed = false; // init runs once per process
+
+// Tuple -> upstream lookup, precomputed once at arm time so the per-query hot
+// path (findUpstreamID) is an O(1) array access, not a config walk + URI parse.
+// Index enc holds the upstream that owns tuple 127.47.11.(enc+1)#(5300+enc+1).
+static char g_uri_map[DOTDOH_MAX_UPSTREAMS][256];
+static int  g_uri_port[DOTDOH_MAX_UPSTREAMS];
+static int  g_uri_count = 0;
 
 // Arm one loopback listener pair per encrypted upstream and record the
 // per-upstream proxy state. Runs exactly once per process, after dnsmasq
@@ -101,6 +109,13 @@ void dotdoh_init(void)
 		if(g_nups >= DOTDOH_MAX_UPSTREAMS)
 			break;
 
+		// Record the tuple->upstream mapping (tuple 127.47.11.(enc+1)) so the
+		// API can resolve it without re-walking the config per query.
+		strncpy(g_uri_map[enc], it->valuestring, sizeof(g_uri_map[enc]) - 1);
+		g_uri_map[enc][sizeof(g_uri_map[enc]) - 1] = '\0';
+		g_uri_port[enc] = u.port;
+		g_uri_count = enc + 1;
+
 		struct proxy_up *up = &g_ups[g_nups++];
 		memset(up, 0, sizeof(*up));
 		up->uri = u;
@@ -134,6 +149,31 @@ void dotdoh_init(void)
 int dotdoh_count(void)
 {
 	return g_nactive;
+}
+
+bool dotdoh_uri_for_listener(const char *ip, int port, char *out, size_t outlen, int *real_port)
+{
+	if(ip == NULL || out == NULL || outlen == 0)
+		return false;
+
+	// Cheap prefix check first, so plaintext upstreams (the common case) cost
+	// almost nothing on the per-query hot path.
+	const size_t plen = strlen(DOTDOH_NET_PREFIX);
+	if(strncmp(ip, DOTDOH_NET_PREFIX, plen) != 0)
+		return false;
+	char *end = NULL;
+	const long n = strtol(ip + plen, &end, 10);
+	if(end == NULL || *end != '\0' || n < 1 || n > g_uri_count ||
+	   port != DOTDOH_PORT_BASE + (int)n)
+		return false;
+
+	// O(1) lookup in the table dotdoh_init() precomputed - tuple N maps to the
+	// N-th encrypted upstream, the same numbering the dnsmasq.conf emission uses.
+	strncpy(out, g_uri_map[n - 1], outlen - 1);
+	out[outlen - 1] = '\0';
+	if(real_port != NULL)
+		*real_port = g_uri_port[n - 1];
+	return true;
 }
 
 // True for an IPv4 loopback source (127.0.0.0/8). Everything else is rejected:
@@ -348,5 +388,6 @@ void dotdoh_cleanup(void)
 	g_nups = 0;
 	g_nactive = 0;
 	g_armed = false;
+	g_uri_count = 0;
 	tls_client_global_free();
 }
