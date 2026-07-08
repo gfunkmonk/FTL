@@ -3584,7 +3584,7 @@ void FTL_fork_and_bind_sockets(struct passwd *ent_pw, bool dnsmasq_start)
 		exit(EXIT_FAILURE);
 	}
 
-#ifdef HAVE_MBEDTLS
+#ifdef HAVE_TLS
 	// Start webserver thread
 	if(pthread_create( &threads[WEBSERVER], &attr, webserver_thread, NULL ) != 0)
 	{
@@ -3594,7 +3594,7 @@ void FTL_fork_and_bind_sockets(struct passwd *ent_pw, bool dnsmasq_start)
 #else
 	// Initialize FTL HTTP server
 	http_init();
-#endif /* HAVE_MBEDTLS */
+#endif /* HAVE_TLS */
 
 	// Chown files if FTL started as user root but a dnsmasq config
 	// option states to run as a different user/group (e.g. "nobody")
